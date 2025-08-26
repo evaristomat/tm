@@ -1,0 +1,91 @@
+2025-08-26 18:44:47,377 - INFO - 
+############################################################
+2025-08-26 18:44:47,377 - INFO - # INICIANDO EXECU��O COMPLETA DO PROJETO
+2025-08-26 18:44:47,377 - INFO - # Data/Hora: 2025-08-26 18:44:47
+2025-08-26 18:44:47,377 - INFO - ############################################################
+
+2025-08-26 18:44:47,378 - INFO - ==================================================
+2025-08-26 18:44:47,382 - INFO -    Script: get_matches_last30.py
+2025-08-26 18:44:48,462 - ERROR -    Erro detalhado: Traceback (most recent call last):
+  File "C:\ProgramData\anaconda3\envs\bet365\tm_api\get_matches_last30.py", line 393, in <module>
+    main()
+  File "C:\ProgramData\anaconda3\envs\bet365\tm_api\get_matches_last30.py", line 367, in main
+    collector = TableTennisResults()
+                ^^^^^^^^^^^^^^^^^^^^
+  File "C:\ProgramData\anaconda3\envs\bet365\tm_api\get_matches_last30.py", line 26, in __init__
+    self.init_database()
+  File "C:\ProgramData\anaconda3\envs\bet365\tm_api\get_matches_last30.py", line 74, in init_database
+    print("\u2705 Banco de dados inicializado")
+  File "C:\ProgramData\anaconda3\envs\bet365\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2705' in position 0: character maps to <undefined>
+
+2025-08-26 18:44:48,464 - INFO - 
+############################################################
+2025-08-26 18:44:48,464 - INFO - # EXECU��O FINALIZADA
+2025-08-26 18:44:48,464 - INFO - # Scripts executados com sucesso: 0
+2025-08-26 18:44:48,466 - INFO - # Scripts com erro: 1
+2025-08-26 18:44:48,466 - INFO - # Data/Hora: 2025-08-26 18:44:48
+2025-08-26 18:44:48,466 - INFO - ############################################################
+
+2025-08-26 18:47:56,087 - INFO - 
+############################################################
+2025-08-26 18:47:56,087 - INFO - # INICIANDO EXECUÇÃO COMPLETA DO PROJETO
+2025-08-26 18:47:56,087 - INFO - # Data/Hora: 2025-08-26 18:47:56
+2025-08-26 18:47:56,087 - INFO - ############################################################
+
+2025-08-26 18:47:56,089 - INFO - ==================================================
+2025-08-26 18:47:56,089 - INFO - Iniciando: Buscar partidas dos últimos 30 dias
+2025-08-26 18:47:56,089 - INFO -    Script: get_matches_last30.py
+2025-08-26 18:48:11,713 - INFO -    Saída: ✅ Banco de dados inicializado
+======================================================================
+COLETANDO EVENTOS DE TÊNIS DE MESA - ÚLTIMOS 2 DIAS
+======================================================================
+
+📅 Buscando eventos para: 20250826
+   🔍 Liga: Czech Liga Pro
+      ✅ 50 eventos encontrados
+   🔍 Liga: Challenger Series TT
+      ✅ 9 eventos encontrados
+   🔍 Liga: TT Cup
+      ✅ 50 eventos encontrados
+   🔍 Liga: TT Elite Series
+      ✅ 50 eventos encontrados
+
+📅 Buscando eve
+2025-08-26 18:48:11,714 - INFO - Buscar partidas dos últimos 30 dias concluído em 15.62 segundos
+2025-08-26 18:48:13,715 - INFO - ==================================================
+2025-08-26 18:48:13,715 - INFO - Iniciando: Monitorar e atualizar partidas ao vivo
+2025-08-26 18:48:13,715 - INFO -    Script: monitor.py
+2025-08-26 18:48:35,065 - INFO - Monitorar e atualizar partidas ao vivo concluído em 21.35 segundos
+2025-08-26 18:48:37,066 - INFO - ==================================================
+2025-08-26 18:48:37,066 - INFO - Iniciando: Processar e identificar apostas valiosas
+2025-08-26 18:48:37,066 - INFO -    Script: db_get_bets.py
+2025-08-26 18:48:40,551 - INFO - Processar e identificar apostas valiosas concluído em 3.48 segundos
+2025-08-26 18:48:42,552 - INFO - ==================================================
+2025-08-26 18:48:42,552 - INFO - Iniciando: Obter resultados das apostas
+2025-08-26 18:48:42,552 - INFO -    Script: db_get_bet_results.py
+2025-08-26 18:48:43,752 - INFO - Obter resultados das apostas concluído em 1.20 segundos
+2025-08-26 18:48:45,753 - INFO - 
+==================================================
+2025-08-26 18:48:45,753 - INFO - Executando envio para Telegram...
+2025-08-26 18:48:45,754 - INFO - ==================================================
+2025-08-26 18:48:45,754 - INFO - Iniciando: Envio de apostas para Telegram
+2025-08-26 18:48:46,035 - INFO - NumExpr defaulting to 16 threads.
+2025-08-26 18:48:46,699 - INFO - Total de apostas não enviadas: 96
+2025-08-26 18:48:46,702 - INFO - Liga Czech Liga Pro já atingiu limite diário (20 apostas)
+2025-08-26 18:48:47,521 - INFO - HTTP Request: POST https://api.telegram.org/botSEU_BOT_TOKEN_AQUI/sendMessage "HTTP/1.1 404 Not Found"
+2025-08-26 18:48:47,522 - ERROR - Erro ao enviar mensagem: Not Found
+2025-08-26 18:48:47,522 - ERROR - Falha ao enviar apostas da liga TT Cup
+2025-08-26 18:48:47,522 - INFO - Liga TT Elite Series já atingiu limite diário (20 apostas)
+2025-08-26 18:48:47,522 - INFO - Total de apostas enviadas: 0
+2025-08-26 18:48:47,522 - INFO - Envio para Telegram concluído
+2025-08-26 18:48:47,522 - INFO - 
+############################################################
+2025-08-26 18:48:47,522 - INFO - # EXECUÇÃO FINALIZADA
+2025-08-26 18:48:47,522 - INFO - # Scripts executados com sucesso: 5
+2025-08-26 18:48:47,524 - INFO - # Scripts com erro: 0
+2025-08-26 18:48:47,524 - INFO - # Data/Hora: 2025-08-26 18:48:47
+2025-08-26 18:48:47,524 - INFO - ############################################################
+

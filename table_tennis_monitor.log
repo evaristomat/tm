@@ -1,0 +1,63 @@
+2025-08-24 19:59:47,982 - TableTennisMonitor.Database - INFO - Banco de dados inicializado com sucesso
+2025-08-24 19:59:47,982 - TableTennisMonitor.Monitor - INFO - Buscando partidas da liga: Setka Cup Women (ID: 10047071)
+2025-08-24 19:59:48,701 - TableTennisMonitor.Monitor - INFO - Encontrados 27 resultados
+2025-08-24 19:59:48,716 - TableTennisMonitor.Monitor - INFO - Novo evento: Svetlana Yureneva vs Olha Yureneva
+2025-08-24 19:59:49,765 - TableTennisMonitor.Monitor - INFO - Encontrados 15 resultados
+2025-08-24 19:59:50,775 - TableTennisMonitor.Monitor - INFO - Buscando partidas da liga: Setka Cup (ID: 10047098)
+2025-08-24 19:59:51,073 - TableTennisMonitor.Monitor - INFO - Encontrados 50 resultados
+2025-08-24 19:59:51,905 - TableTennisMonitor.Monitor - INFO - Encontrados 50 resultados
+2025-08-24 19:59:52,954 - TableTennisMonitor.Monitor - INFO - Encontrados 50 resultados
+2025-08-24 19:59:52,972 - TableTennisMonitor.Monitor - INFO - Novo evento: Vadym Komar vs Serhii Kiilo
+2025-08-24 19:59:53,927 - TableTennisMonitor.Monitor - INFO - Encontrados 50 resultados
+2025-08-24 19:59:54,755 - TableTennisMonitor.Monitor - INFO - Encontrados 50 resultados
+2025-08-24 19:59:54,770 - TableTennisMonitor.Monitor - INFO - Novo evento: Jan Mares vs Martin Holub
+2025-08-24 19:59:54,779 - TableTennisMonitor.Monitor - INFO - Novo evento: Anatoliy Lysyi vs Volodymyr Ryzhenko
+2025-08-24 19:59:55,571 - TableTennisMonitor.Monitor - INFO - Encontrados 49 resultados
+2025-08-24 19:59:55,588 - TableTennisMonitor.Monitor - INFO - Novo evento: Tomas Stejskal vs Oleh Plyska
+2025-08-24 19:59:55,592 - TableTennisMonitor.Monitor - INFO - Novo evento: Ladislav Tuma vs Stepan Kalensky
+2025-08-24 19:59:56,687 - TableTennisMonitor.Monitor - INFO - Encontrados 50 resultados
+2025-08-24 19:59:57,579 - TableTennisMonitor.Monitor - INFO - Encontrados 50 resultados
+2025-08-24 19:59:58,416 - TableTennisMonitor.Monitor - INFO - Encontrados 50 resultados
+2025-08-24 19:59:59,358 - TableTennisMonitor.Monitor - INFO - Encontrados 50 resultados
+2025-08-24 20:00:00,251 - TableTennisMonitor.Monitor - INFO - Encontrados 50 resultados
+2025-08-24 20:00:01,169 - TableTennisMonitor.Monitor - INFO - Encontrados 40 resultados
+2025-08-24 20:00:06,003 - TableTennisMonitor.Monitor - INFO - Encontrados 25 resultados
+2025-08-24 20:00:06,781 - TableTennisMonitor.Monitor - INFO - Buscando partidas da liga: Czech Liga Pro (ID: 10048210)
+2025-08-24 20:00:07,555 - TableTennisMonitor.Monitor - INFO - Encontrados 50 resultados
+2025-08-24 20:00:08,845 - TableTennisMonitor.Monitor - INFO - Encontrados 50 resultados
+2025-08-24 20:00:09,957 - TableTennisMonitor.Monitor - INFO - Encontrados 50 resultados
+2025-08-24 20:00:09,989 - TableTennisMonitor.Monitor - INFO - Novo evento: Vladislav Hampejs vs Petr Zmuda
+2025-08-24 20:00:09,990 - TableTennisMonitor.Monitor - INFO - Novo evento: Matej Volf vs Kamil Novak
+2025-08-24 20:00:09,991 - TableTennisMonitor.Monitor - INFO - Novo evento: Michal Hrabec vs Roman Opralka
+2025-08-24 20:00:12,561 - TableTennisMonitor.Monitor - INFO - Encontrados 46 resultados
+2025-08-24 20:00:13,794 - TableTennisMonitor.Monitor - INFO - Encontrados 50 resultados
+2025-08-24 20:00:15,182 - TableTennisMonitor.Monitor - INFO - Encontrados 50 resultados
+2025-08-24 20:00:17,505 - TableTennisMonitor.Monitor - INFO - Encontrados 48 resultados
+2025-08-24 20:00:19,226 - TableTennisMonitor.Monitor - INFO - Encontrados 18 resultados
+2025-08-24 20:00:25,258 - TableTennisMonitor.Monitor - INFO - Buscando partidas da liga: Challenger Series TT (ID: 10068516)
+2025-08-24 20:00:25,790 - TableTennisMonitor.Monitor - INFO - Encontrados 18 resultados
+2025-08-24 20:00:29,336 - TableTennisMonitor.Monitor - INFO - Buscando partidas da liga: TT Cup (ID: 10073432)
+2025-08-24 20:00:30,421 - TableTennisMonitor.Monitor - INFO - Encontrados 50 resultados
+2025-08-24 20:00:30,435 - TableTennisMonitor.Monitor - INFO - Novo evento: Tomas Rein vs Tomas Cerveny Jr
+2025-08-24 20:00:32,248 - TableTennisMonitor.Monitor - INFO - Encontrados 38 resultados
+2025-08-24 20:00:33,944 - TableTennisMonitor.Monitor - INFO - Encontrados 30 resultados
+2025-08-24 20:00:35,225 - TableTennisMonitor.Monitor - INFO - Buscando partidas da liga: TT Elite Series (ID: 10073465)
+2025-08-24 20:00:41,966 - TableTennisMonitor.Monitor - INFO - Encontrados 50 resultados
+2025-08-24 20:00:43,878 - TableTennisMonitor.Monitor - INFO - Encontrados 50 resultados
+2025-08-24 20:00:48,535 - TableTennisMonitor.Monitor - INFO - Encontrados 14 resultados
+2025-08-24 20:00:49,750 - TableTennisMonitor.Monitor - INFO - Encontrados 40 resultados
+2025-08-24 20:00:51,516 - TableTennisMonitor.Monitor - INFO - Encontradas 10 partidas novas. Buscando odds...
+2025-08-24 20:00:51,543 - TableTennisMonitor.Monitor - INFO - Buscando odds para o evento 180157030
+2025-08-24 20:00:51,560 - TableTennisMonitor.Monitor - INFO - Buscando odds para o evento 180141465
+2025-08-24 20:00:51,578 - TableTennisMonitor.Monitor - INFO - Buscando odds para o evento 180157117
+2025-08-24 20:00:51,596 - TableTennisMonitor.Monitor - INFO - Buscando odds para o evento 180158940
+2025-08-24 20:00:51,614 - TableTennisMonitor.Monitor - INFO - Buscando odds para o evento 180167175
+2025-08-24 20:00:51,634 - TableTennisMonitor.Monitor - INFO - Buscando odds para o evento 180167176
+2025-08-24 20:00:51,651 - TableTennisMonitor.Monitor - INFO - Buscando odds para o evento 180159038
+2025-08-24 20:00:51,666 - TableTennisMonitor.Monitor - INFO - Buscando odds para o evento 180159040
+2025-08-24 20:00:51,673 - TableTennisMonitor.Monitor - INFO - Buscando odds para o evento 180159120
+2025-08-24 20:00:51,679 - TableTennisMonitor.Monitor - INFO - Buscando odds para o evento 180140721
+2025-08-24 20:00:54,561 - TableTennisMonitor.Monitor - INFO - Processamento de eventos concluído
+2025-08-24 20:00:54,562 - TableTennisMonitor - INFO - Exemplo de consulta de dados:
+2025-08-24 20:00:54,564 - TableTennisMonitor - INFO - Odds Para Ganhar: {'Away': 2.25, 'Home': 1.57}
+2025-08-24 20:00:54,565 - TableTennisMonitor - INFO - Odds Total: [('Over O 76.5', 1.9, 'O 76.5'), ('Under U 76.5', 1.8, 'U 76.5')]

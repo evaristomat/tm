@@ -1,0 +1,17 @@
+2025-08-26 18:52:20 - INFO - [36m╔══════════════════════════════════════════════════════════╗
+2025-08-26 18:52:20 - INFO - [36m║[33m          INICIANDO EXECUÇÃO COMPLETA DO PROJETO         [36m║
+2025-08-26 18:52:20 - INFO - [36m║[37m    Data/Hora: 2025-08-26 18:52:20    [36m║
+2025-08-26 18:52:20 - INFO - [36m╚══════════════════════════════════════════════════════════╝[0m
+2025-08-26 18:52:20 - INFO - ============================================================
+2025-08-26 18:52:20 - INFO - 🔄 INICIANDO: BUSCAR PARTIDAS DOS ÚLTIMOS 30 DIAS
+2025-08-26 18:52:20 - INFO -    📂 Script: get_matches_last30.py
+2025-08-26 18:52:36 - INFO -    📊 Saída relevante:
+2025-08-26 18:52:36 - INFO -       ✅ 50 eventos encontrados
+2025-08-26 18:52:36 - INFO -       ✅ 9 eventos encontrados
+2025-08-26 18:52:36 - INFO -       ✅ 50 eventos encontrados
+2025-08-26 18:52:36 - INFO -       ✅ 50 eventos encontrados
+2025-08-26 18:52:36 - INFO -       ✅ 50 eventos encontrados
+2025-08-26 18:52:36 - INFO - ✅ BUSCAR PARTIDAS DOS ÚLTIMOS 30 DIAS CONCLUÍDO em 16.68 segundos
+2025-08-26 18:52:38 - INFO - ============================================================
+2025-08-26 18:52:38 - INFO - 🔄 INICIANDO: MONITORAR E ATUALIZAR PARTIDAS AO VIVO
+2025-08-26 18:52:38 - INFO -    📂 Script: monitor.py

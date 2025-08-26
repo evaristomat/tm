@@ -2,11 +2,10 @@ name: Run Bet365 Bot
 
 on:
   schedule:
-    # Executa 3 vezes ao dia: 8h, 14h e 20h (UTC)
     - cron: '0 8 * * *'
     - cron: '0 14 * * *'
     - cron: '0 20 * * *'
-  workflow_dispatch: # Permite execução manual
+  workflow_dispatch:
 
 jobs:
   run-bot:
@@ -27,9 +26,13 @@ jobs:
         python -m pip install --upgrade pip
         pip install colorama pandas python-telegram-bot aiohttp requests
 
-    - name: Create config from environment variables
+    - name: Run bot
+      env:
+        BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        CHAT_ID: ${{ secrets.CHAT_ID }}
       run: |
-        cat > config.py << EOF
+        # Criar arquivo de configuração com nome diferente
+        cat > bot_config.py << EOF
         import os
         BOT_TOKEN = os.environ.get("BOT_TOKEN")
         CHAT_ID = os.environ.get("CHAT_ID")
@@ -37,12 +40,8 @@ jobs:
         if not BOT_TOKEN or not CHAT_ID:
             raise ValueError("BOT_TOKEN or CHAT_ID environment variables not set")
         EOF
-
-    - name: Run bot
-      env:
-        BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-        CHAT_ID: ${{ secrets.CHAT_ID }}
-      run: |
+        
+        # Executar o script
         python run_full_bot.py
 
     - name: Upload logs

@@ -170,8 +170,8 @@ async def run_telegram_script():
         from send_telegram import TelegramBetNotifier
 
         # Configurações do Telegram (substitua pelos valores reais)
-        BOT_TOKEN = os.environ.get("BOT_TOKEN", "8393179861:AAE_5vgkSBHk9nMupfrEUX0spuz9lYt0i9c")
-        CHAT_ID = os.environ.get("CHAT_ID", "-1002840666957")
+        BOT_TOKEN = os.environ.get("BOT_TOKEN")
+        CHAT_ID = os.environ.get("CHAT_ID")
 
         notifier = TelegramBetNotifier(BOT_TOKEN, CHAT_ID)
         await notifier.process_and_send_bets()

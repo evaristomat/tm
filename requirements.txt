@@ -1,0 +1,5 @@
+colorama
+pandas
+python-telegram-bot
+aiohttp
+requests

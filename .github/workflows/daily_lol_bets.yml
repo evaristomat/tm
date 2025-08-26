@@ -1,0 +1,47 @@
+name: Run Bet365 Bot
+
+on:
+  schedule:
+    # Executa 3 vezes ao dia: 8h, 14h e 20h (UTC)
+    - cron: '0 8 * * *'
+    - cron: '0 14 * * *'
+    - cron: '0 20 * * *'
+  workflow_dispatch: # Permite execução manual
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+        cache: 'pip'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install colorama pandas python-telegram-bot aiohttp
+
+    - name: Create config file
+      run: |
+        cat > config.py << EOF
+        BOT_TOKEN = "${{ secrets.BOT_TOKEN }}"
+        CHAT_ID = "${{ secrets.CHAT_ID }}"
+        EOF
+
+    - name: Run bot
+      run: |
+        python run_full_bot.py
+
+    - name: Upload logs
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: bot-logs
+        path: run_all_*.log

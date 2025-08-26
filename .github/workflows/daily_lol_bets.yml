@@ -31,17 +31,6 @@ jobs:
         BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
         CHAT_ID: ${{ secrets.CHAT_ID }}
       run: |
-        # Criar arquivo de configuração com nome diferente
-        cat > bot_config.py << EOF
-        import os
-        BOT_TOKEN = os.environ.get("BOT_TOKEN")
-        CHAT_ID = os.environ.get("CHAT_ID")
-        
-        if not BOT_TOKEN or not CHAT_ID:
-            raise ValueError("BOT_TOKEN or CHAT_ID environment variables not set")
-        EOF
-        
-        # Executar o script
         python run_full_bot.py
 
     - name: Upload logs

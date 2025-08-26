@@ -14,7 +14,7 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Set up Python
       uses: actions/setup-python@v4
@@ -25,23 +25,29 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install colorama pandas python-telegram-bot aiohttp
+        pip install colorama pandas python-telegram-bot aiohttp requests
 
-    - name: Create config file
+    - name: Create config from environment variables
       run: |
         cat > config.py << EOF
-        BOT_TOKEN = "${{ secrets.BOT_TOKEN }}"
-        CHAT_ID = "${{ secrets.CHAT_ID }}"
+        import os
+        BOT_TOKEN = os.environ.get("BOT_TOKEN")
+        CHAT_ID = os.environ.get("CHAT_ID")
+        
+        if not BOT_TOKEN or not CHAT_ID:
+            raise ValueError("BOT_TOKEN or CHAT_ID environment variables not set")
         EOF
 
     - name: Run bot
+      env:
+        BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        CHAT_ID: ${{ secrets.CHAT_ID }}
       run: |
         python run_full_bot.py
 
     - name: Upload logs
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: always()
       with:
-        name: bot-logs
+        name: bot-logs-${{ github.run_id }}
         path: run_all_*.log

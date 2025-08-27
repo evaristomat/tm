@@ -367,7 +367,7 @@ def main():
     collector = TableTennisResults()
 
     # Coletar eventos dos últimos 30 dias
-    events = collector.get_events_from_leagues(days=2)
+    events = collector.get_events_from_leagues(days=3)
 
     if not events:
         print("❌ Nenhum evento encontrado")

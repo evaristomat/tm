@@ -6,6 +6,15 @@ import asyncio
 import sys
 import os
 
+# Carregar variáveis de ambiente
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:
+    # Fallback caso dotenv não esteja disponível
+    pass
+
 # Configurar logging básico
 logging.basicConfig(
     level=logging.INFO,
@@ -21,8 +30,8 @@ logging.basicConfig(
 logger = logging.getLogger("main_runner")
 
 # Obter configurações das variáveis de ambiente
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-CHAT_ID = os.environ.get("CHAT_ID")
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 # Verificar se as variáveis necessárias estão definidas
 if not BOT_TOKEN or not CHAT_ID:

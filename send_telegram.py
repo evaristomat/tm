@@ -5,6 +5,16 @@ import asyncio
 from telegram import Bot
 from telegram.constants import ParseMode
 import logging
+import os
+
+# Carregar variáveis de ambiente
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:
+    # Fallback caso dotenv não esteja disponível
+    pass
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -13,12 +23,31 @@ logger = logging.getLogger("telegram_notifier")
 
 
 class TelegramBetNotifier:
-    def __init__(self, bot_token, chat_id, bets_db_path="bets.db"):
-        self.bot_token = bot_token
-        self.chat_id = chat_id
+    def __init__(self, bot_token=None, chat_id=None, bets_db_path="bets.db"):
+        # Usar variáveis de ambiente se não fornecidas
+        self.bot_token = bot_token or os.getenv("TELEGRAM_BOT_TOKEN")
+        self.chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID")
+
+        # Validar se as variáveis foram carregadas
+        if not self.bot_token:
+            raise ValueError(
+                "TELEGRAM_BOT_TOKEN não encontrado! Configure no .env ou passe como parâmetro."
+            )
+
+        if not self.chat_id:
+            raise ValueError(
+                "TELEGRAM_CHAT_ID não encontrado! Configure no .env ou passe como parâmetro."
+            )
+
         self.bets_db_path = bets_db_path
-        self.bot = Bot(token=bot_token)
+        self.bot = Bot(token=self.bot_token)
         self.init_telegram_db()
+
+        logger.info("✅ TelegramBetNotifier inicializado com sucesso")
+        logger.info(f"📱 Chat ID: {self.chat_id}")
+        logger.info(
+            f"🤖 Bot Token: {self.bot_token[:10]}..."
+        )  # Mostrar apenas início do token
 
     def init_telegram_db(self):
         """Inicializa tabelas de controle do telegram"""
@@ -262,7 +291,8 @@ class TelegramBetNotifier:
 
         # Apostas To Win
         for _, bet in to_win_bets.iterrows():
-            event_time = pd.to_datetime(bet["event_time"]).strftime("%H:%M")
+            # CORREÇÃO AQUI: Adicionar data ao formato
+            event_time = pd.to_datetime(bet["event_time"]).strftime("%d/%m %H:%M")
 
             # Determinar o TIP baseado na seleção
             if bet["selection"] == "Home":
@@ -279,7 +309,8 @@ class TelegramBetNotifier:
 
         # Apostas Total
         for _, bet in total_bets.iterrows():
-            event_time = pd.to_datetime(bet["event_time"]).strftime("%H:%M")
+            # CORREÇÃO AQUI: Adicionar data ao formato
+            event_time = pd.to_datetime(bet["event_time"]).strftime("%d/%m %H:%M")
 
             # Formatar o TIP para totais
             tip = f"{bet['selection']} {bet['handicap']:.1f}"
@@ -422,22 +453,49 @@ class TelegramBetNotifier:
             logger.error(f"❌ Erro ao enviar resumo: {e}")
 
 
+def validate_env_vars():
+    """Valida se as variáveis de ambiente estão configuradas"""
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+    if not bot_token:
+        logger.error("❌ TELEGRAM_BOT_TOKEN não encontrado no .env!")
+        return False
+
+    if not chat_id:
+        logger.error("❌ TELEGRAM_CHAT_ID não encontrado no .env!")
+        return False
+
+    logger.info("✅ Variáveis de ambiente carregadas com sucesso")
+    return True
+
+
 async def main():
-    # Configurações
-    BOT_TOKEN = "8393179861:AAE_5vgkSBHk9nMupfrEUX0spuz9lYt0i9c"
-    CHAT_ID = "-1002840666957"
+    """Função principal"""
+    # Validar variáveis de ambiente
+    if not validate_env_vars():
+        logger.error("❌ Erro: Variáveis de ambiente não configuradas!")
+        logger.error("Configure TELEGRAM_BOT_TOKEN e TELEGRAM_CHAT_ID no arquivo .env")
+        return
 
-    # Inicializar notificador
-    notifier = TelegramBetNotifier(BOT_TOKEN, CHAT_ID)
+    try:
+        # Inicializar notificador (sem passar parâmetros, vai usar .env)
+        notifier = TelegramBetNotifier()
 
-    # Processar e enviar apostas
-    await notifier.process_and_send_bets()
+        # Processar e enviar apostas
+        await notifier.process_and_send_bets()
 
-    # Enviar resumo de lucros
-    await notifier.send_profit_summary()
+        # Enviar resumo de lucros
+        await notifier.send_profit_summary()
 
-    # Opcional: enviar resumo diário
-    # await notifier.send_daily_summary()
+        # Opcional: enviar resumo diário
+        # await notifier.send_daily_summary()
+
+        logger.info("✅ Execução concluída com sucesso!")
+
+    except Exception as e:
+        logger.error(f"❌ Erro durante a execução: {e}")
+        raise
 
 
 if __name__ == "__main__":

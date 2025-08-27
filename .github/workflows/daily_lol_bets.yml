@@ -2,14 +2,15 @@ name: Run Bet365 Bot
 
 on:
   schedule:
-    - cron: '0 8 * * *'
-    - cron: '0 14 * * *'
-    - cron: '0 20 * * *'
-  workflow_dispatch:
+    - cron: '0 8 * * *'   # 8:00 UTC
+    - cron: '0 14 * * *'  # 14:00 UTC
+    - cron: '0 20 * * *'  # 20:00 UTC
+  workflow_dispatch:      # Permite execução manual
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    timeout-minutes: 30   # Timeout de segurança
 
     steps:
     - name: Checkout code
@@ -18,24 +19,99 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.9'
+        python-version: '3.11'  # Versão mais recente e estável
         cache: 'pip'
+
+    # Debugging - verificar arquivos
+    - name: List files
+      run: |
+        echo "=== Arquivos no diretório ==="
+        ls -la
+        echo "=== Conteúdo requirements.txt ==="
+        cat requirements.txt
+        echo "=== Verificar imports nos scripts ==="
+        grep -r "import dotenv\|from dotenv" . || echo "Nenhum import dotenv encontrado"
 
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install colorama pandas python-telegram-bot aiohttp requests
+        # Instalar dependências uma por uma para detectar problemas
+        echo "Installing colorama..."
+        pip install colorama
+        echo "Installing pandas..."
+        pip install pandas
+        echo "Installing python-telegram-bot..."
+        pip install python-telegram-bot
+        echo "Installing aiohttp..."
+        pip install aiohttp
+        echo "Installing requests..."
+        pip install requests
+        echo "Installing python-dotenv..."
+        pip install python-dotenv
+        
+        # Verificar se todas foram instaladas
+        echo "=== Pacotes instalados ==="
+        pip list | grep -E "(colorama|pandas|telegram|aiohttp|requests|dotenv)"
+        
+        # Teste do import
+        python -c "from dotenv import load_dotenv; print('✅ dotenv importado com sucesso')"
+
+    # Criar arquivo .env temporário com as secrets
+    - name: Create .env file
+      run: |
+        echo "BOT_TOKEN=${{ secrets.BOT_TOKEN }}" >> .env
+        echo "CHAT_ID=${{ secrets.CHAT_ID }}" >> .env
+        if [ ! -z "${{ secrets.API_KEY }}" ]; then
+          echo "API_KEY=${{ secrets.API_KEY }}" >> .env
+        fi
+        echo "=== Arquivo .env criado ==="
+        echo "Variáveis definidas:"
+        grep -E "^[A-Z_]+" .env | cut -d'=' -f1 || echo "Nenhuma variável encontrada"
+
+    - name: Test Python environment
+      run: |
+        echo "=== Testando ambiente Python ==="
+        python --version
+        python -c "
+        try:
+            from dotenv import load_dotenv
+            print('✅ dotenv OK')
+            load_dotenv()
+            import os
+            print('✅ .env carregado')
+            if os.getenv('BOT_TOKEN'):
+                print('✅ BOT_TOKEN encontrado')
+            else:
+                print('❌ BOT_TOKEN não encontrado')
+        except Exception as e:
+            print(f'❌ Erro: {e}')
+        "
 
     - name: Run bot
       env:
+        # Definir variáveis também como env (fallback)
         BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
         CHAT_ID: ${{ secrets.CHAT_ID }}
+        API_KEY: ${{ secrets.API_KEY }}
       run: |
+        echo "=== Iniciando execução do bot ==="
         python run_full_bot.py
+      continue-on-error: false
 
+    # Upload logs mesmo se falhar
     - name: Upload logs
       uses: actions/upload-artifact@v4
       if: always()
       with:
         name: bot-logs-${{ github.run_id }}
-        path: run_all_*.log
+        path: |
+          *.log
+          logs/
+        retention-days: 7
+
+    # Notificação de falha
+    - name: Notify failure
+      if: failure()
+      run: |
+        echo "❌ Execução falhou!"
+        echo "Verificar logs nos artifacts"

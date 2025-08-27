@@ -6,7 +6,7 @@ import asyncio
 import sys
 import os
 
-# Configurar logging básico (sem cores para compatibilidade)
+# Configurar logging básico
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -26,8 +26,8 @@ CHAT_ID = os.environ.get("CHAT_ID")
 
 # Verificar se as variáveis necessárias estão definidas
 if not BOT_TOKEN or not CHAT_ID:
-    logger.error("❌ BOT_TOKEN ou CHAT_ID não configurados")
-    logger.error("❌ Certifique-se de definir estas variáveis de ambiente")
+    logger.error("BOT_TOKEN ou CHAT_ID não configurados")
+    logger.error("Certifique-se de definir estas variáveis de ambiente")
     sys.exit(1)
 
 
@@ -74,7 +74,7 @@ def run_script(script_name, description):
             ]
             if important_lines:
                 logger.info(f"   Saída relevante:")
-                for line in important_lines[:5]:  # Limitar a 5 linhas
+                for line in important_lines[:5]:
                     logger.info(f"      {line.strip()}")
 
         logger.info(f"{description.upper()} CONCLUÍDO em {elapsed_time:.2f} segundos")
@@ -83,7 +83,6 @@ def run_script(script_name, description):
     except subprocess.CalledProcessError as e:
         logger.error(f"ERRO AO EXECUTAR {script_name}:")
         if e.stderr:
-            # Filtrar linhas de erro importantes
             error_lines = [
                 line
                 for line in e.stderr.split("\n")
@@ -93,7 +92,7 @@ def run_script(script_name, description):
                 )
             ]
             if error_lines:
-                for line in error_lines[:3]:  # Limitar a 3 linhas de erro
+                for line in error_lines[:3]:
                     logger.error(f"   {line.strip()}")
         return False
     except FileNotFoundError:
@@ -155,7 +154,7 @@ def main():
         {
             "file": "db_get_bet_results.py",
             "description": "Obter resultados das apostas",
-            "required": False,  # Pode falhar se não houver resultados ainda
+            "required": False,
         },
     ]
 
@@ -180,21 +179,18 @@ def main():
         else:
             fail_count += 1
 
-            # Se o script é obrigatório e falhou, parar execução
             if script["required"]:
                 logger.error("SCRIPT OBRIGATORIO FALHOU. INTERROMPENDO EXECUCAO.")
                 break
 
-        # Aguardar um pouco entre scripts para não sobrecarregar
         time.sleep(2)
 
-    # Executar script do Telegram (assíncrono)
+    # Executar script do Telegram
     telegram_success = False
-    if success_count > 0:  # Só enviar se pelo menos um script funcionou
+    if success_count > 0:
         logger.info("\n" + "=" * 60)
         logger.info("EXECUTANDO ENVIO PARA TELEGRAM...")
 
-        # Criar loop assíncrono para o Telegram
         try:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)

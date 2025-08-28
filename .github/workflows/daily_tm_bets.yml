@@ -42,14 +42,12 @@ jobs:
         cat > .env << EOF
         TELEGRAM_BOT_TOKEN=${{ secrets.BOT_TOKEN }}
         TELEGRAM_CHAT_ID=${{ secrets.CHAT_ID }}
-        API_KEY=${{ secrets.BETS_API_KEY }}
         BETSAPI_API_KEY=${{ secrets.BETS_API_KEY }}
         EOF
         echo "✅ Arquivo .env criado"
 
     - name: Step 1 - Get Last 30 Days Results
       env:
-        API_KEY: ${{ secrets.BETS_API_KEY }}
         BETSAPI_API_KEY: ${{ secrets.BETS_API_KEY }}
       run: |
         echo "=== 1. Coletando resultados dos últimos 30 dias ==="
@@ -58,7 +56,6 @@ jobs:
 
     - name: Step 2 - Monitor Upcoming Matches
       env:
-        API_KEY: ${{ secrets.BETS_API_KEY }}
         BETSAPI_API_KEY: ${{ secrets.BETS_API_KEY }}
       run: |
         echo "=== 2. Monitorando jogos próximos 3 dias ==="

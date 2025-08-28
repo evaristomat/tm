@@ -40,27 +40,55 @@ jobs:
     - name: Create .env file
       run: |
         cat > .env << EOF
-        BOT_TOKEN=${{ secrets.BOT_TOKEN }}
-        CHAT_ID=${{ secrets.CHAT_ID }}
+        TELEGRAM_BOT_TOKEN=${{ secrets.BOT_TOKEN }}
+        TELEGRAM_CHAT_ID=${{ secrets.CHAT_ID }}
         API_KEY=${{ secrets.API_KEY }}
         EOF
         echo "✅ Arquivo .env criado"
 
-    - name: Run bot
+    - name: Step 1 - Get Last 30 Days Results
       env:
-        BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-        CHAT_ID: ${{ secrets.CHAT_ID }}
         API_KEY: ${{ secrets.API_KEY }}
       run: |
-        echo "=== Iniciando execução do bot ==="
-        python run_full_bot.py
+        echo "=== 1. Coletando resultados dos últimos 30 dias ==="
+        python get_matches_last30.py
+        echo "✅ Resultados históricos coletados"
+
+    - name: Step 2 - Monitor Upcoming Matches
+      env:
+        API_KEY: ${{ secrets.API_KEY }}
+      run: |
+        echo "=== 2. Monitorando jogos próximos 3 dias ==="
+        python monitor.py
+        echo "✅ Jogos futuros coletados"
+
+    - name: Step 3 - Identify Good Bets
+      run: |
+        echo "=== 3. Identificando apostas boas ==="
+        python db_get_bets.py
+        echo "✅ Apostas identificadas"
+
+    - name: Step 4 - Check Bet Results
+      run: |
+        echo "=== 4. Verificando resultados das apostas ==="
+        python db_get_bets_results.py
+        echo "✅ Resultados verificados"
+
+    - name: Step 5 - Send Telegram Notifications
+      env:
+        TELEGRAM_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.CHAT_ID }}
+      run: |
+        echo "=== 5. Enviando notificações Telegram ==="
+        python send_telegram.py
+        echo "✅ Notificações enviadas"
 
     - name: Check for database changes
       if: always()
       id: check-changes
       run: |
         git status
-        if git diff --name-only | grep -E '\.(db|sqlite|json)$' || git diff --name-only | grep 'data/'; then
+        if git diff --name-only | grep -E '\.(db|sqlite|json)$' || git diff --name-only | grep 'data/' || git ls-files --others --exclude-standard | grep -E '\.(db|sqlite|json)$'; then
           echo "changes_detected=true" >> $GITHUB_OUTPUT
           echo "✅ Mudanças detectadas no banco de dados"
         else
@@ -97,13 +125,13 @@ jobs:
           data/
         retention-days: 3
 
-    - name: Notify status
+    - name: Notify execution status
       if: always()
       run: |
         if [ "${{ job.status }}" == "success" ]; then
-          echo "✅ Execução bem-sucedida"
-          echo "::notice::Bot executado com sucesso"
+          echo "✅ Pipeline completo executado com sucesso"
+          echo "::notice::Bot executado com sucesso - Todos os 5 passos concluídos"
         else
-          echo "❌ Falha na execução"
-          echo "::error::Falha na execução do bot"
+          echo "❌ Falha no pipeline de execução"
+          echo "::error::Falha na execução do bot - Verifique os logs dos steps"
         fi

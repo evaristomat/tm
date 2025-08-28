@@ -134,6 +134,35 @@ async def run_telegram_script():
         logger.error(f"ERRO AO EXECUTAR SCRIPT DO TELEGRAM: {e}")
         return False
 
+def commit_and_push_changes():
+    """Faz commit e push de mudanças no repositório"""
+    try:
+        subprocess.run(
+            ["git", "config", "--global", "user.email", "action@github.com"], check=True
+        )
+        subprocess.run(
+            ["git", "config", "--global", "user.name", "GitHub Action"], check=True
+        )
+
+        # Verificar status
+        result = subprocess.run(
+            ["git", "status"], capture_output=True, text=True, check=True
+        )
+        logger.info(f"Git status:\n{result.stdout}")
+
+        # Adicionar todos os arquivos modificados
+        subprocess.run(["git", "add", "."], check=True)
+
+        # Fazer commit
+        commit_message = f"Auto-update: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        subprocess.run(["git", "commit", "-m", commit_message], check=True)
+
+        # Fazer push
+        subprocess.run(["git", "push"], check=True)
+        logger.info("Mudanças commitadas e pushadas com sucesso")
+
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Erro ao commitar mudanças: {e}")
 
 def main():
     """Função principal que executa todos os scripts em ordem"""
@@ -232,6 +261,9 @@ def main():
     if telegram_success is not None:
         status = "✅" if telegram_success else "❌"
         logger.info(f"   {status} Envio para Telegram")
+
+    if success_count > 0:
+        commit_and_push_changes()
 
     return success_count, fail_count
 

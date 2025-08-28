@@ -7,21 +7,20 @@ on:
     - cron: '0 20 * * *'  # 20:00 UTC
   workflow_dispatch:      # Permite execução manual
 
-# Permissões necessárias para fazer push das alterações
 permissions:
   contents: write
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 30   # Timeout de segurança
+    timeout-minutes: 45
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
-        fetch-depth: 0  # Importante para fetch completo do histórico
+        fetch-depth: 0
 
     - name: Set up Python
       uses: actions/setup-python@v4
@@ -32,24 +31,20 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        
-        # Verificar instalação dos pacotes críticos
-        echo "=== Pacotes instalados ==="
-        pip list | grep -E "(colorama|pandas|telegram|aiohttp|requests|dotenv)"
-        
-        # Teste do import
-        python -c "from dotenv import load_dotenv; print('✅ dotenv importado com sucesso')"
+        if [ -f requirements.txt ]; then
+          pip install -r requirements.txt
+        else
+          pip install colorama pandas python-telegram-bot aiohttp requests python-dotenv
+        fi
 
-    # Criar arquivo .env temporário com as secrets
     - name: Create .env file
       run: |
-        echo "BOT_TOKEN=${{ secrets.BOT_TOKEN }}" >> .env
-        echo "CHAT_ID=${{ secrets.CHAT_ID }}" >> .env
-        if [ ! -z "${{ secrets.API_KEY }}" ]; then
-          echo "API_KEY=${{ secrets.API_KEY }}" >> .env
-        fi
-        echo "=== Arquivo .env criado ==="
+        cat > .env << EOF
+        BOT_TOKEN=${{ secrets.BOT_TOKEN }}
+        CHAT_ID=${{ secrets.CHAT_ID }}
+        API_KEY=${{ secrets.API_KEY }}
+        EOF
+        echo "✅ Arquivo .env criado"
 
     - name: Run bot
       env:
@@ -60,47 +55,55 @@ jobs:
         echo "=== Iniciando execução do bot ==="
         python run_full_bot.py
 
-    - name: Commit and Push Database Changes
-      if: always()  # Executa mesmo se o bot falhar
+    - name: Check for database changes
+      if: always()
+      id: check-changes
       run: |
-        # Configurar git
-        git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action"
-        
-        # Verificar se há mudanças
-        echo "=== Verificando mudanças no banco de dados ==="
         git status
-        
-        # Adicionar todos os arquivos de dados (ajuste conforme necessário)
-        git add *.db *.sqlite *.json data/ || echo "Nenhum arquivo para adicionar"
-        
-        # Verificar se há mudanças para commitar
-        if git diff --staged --quiet; then
-          echo "Não há mudanças para commitar"
+        if git diff --name-only | grep -E '\.(db|sqlite|json)$' || git diff --name-only | grep 'data/'; then
+          echo "changes_detected=true" >> $GITHUB_OUTPUT
+          echo "✅ Mudanças detectadas no banco de dados"
         else
-          # Fazer commit das mudanças
-          git commit -m "Auto-update: $(date +'%Y-%m-%d %H:%M:%S')"
-          
-          # Fazer push das mudanças
-          git push origin HEAD:main
-          echo "✅ Mudanças commitadas e pushadas com sucesso"
+          echo "changes_detected=false" >> $GITHUB_OUTPUT
+          echo "❌ Nenhuma mudança detectada no banco de dados"
         fi
 
-    - name: Upload logs and database
+    - name: Commit and push database changes
+      if: always() && steps.check-changes.outputs.changes_detected == 'true'
+      run: |
+        git config --local user.email "github-actions@github.com"
+        git config --local user.name "GitHub Actions"
+        git add *.db *.sqlite *.json data/ 2>/dev/null || true
+        
+        if git diff --staged --quiet; then
+          echo "❌ Nenhuma mudança para commitar"
+          exit 0
+        fi
+        
+        git commit -m "🤖 Auto-update database: $(date +'%Y-%m-%d %H:%M:%S')"
+        git push origin HEAD:${{ github.ref_name }}
+        echo "✅ Banco de dados atualizado e push realizado"
+
+    - name: Upload artifacts
       uses: actions/upload-artifact@v4
       if: always()
       with:
-        name: bot-data-${{ github.run_id }}
+        name: bot-data-${{ github.run_id }}-${{ github.run_attempt }}
         path: |
           *.log
           *.db
           *.sqlite
           *.json
           data/
-        retention-days: 7
+        retention-days: 3
 
-    - name: Notify failure
-      if: failure()
+    - name: Notify status
+      if: always()
       run: |
-        echo "❌ Execução falhou!"
-        echo "Verificar logs e dados nos artifacts"
+        if [ "${{ job.status }}" == "success" ]; then
+          echo "✅ Execução bem-sucedida"
+          echo "::notice::Bot executado com sucesso"
+        else
+          echo "❌ Falha na execução"
+          echo "::error::Falha na execução do bot"
+        fi

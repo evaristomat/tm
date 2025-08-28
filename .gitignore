@@ -1,11 +1,20 @@
 # Arquivos de ambiente
 .env
-*.env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
 
-# Logs
-logs/
+# Arquivos de log
 *.log
+
+# Arquivos do Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# IDEs
+.vscode/
+.idea/
+
+# Sistema
+.DS_Store
+Thumbs.db

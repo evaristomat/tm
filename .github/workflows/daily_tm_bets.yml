@@ -31,11 +31,15 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
+        # Sempre use o requirements.txt se existir
         if [ -f requirements.txt ]; then
-          pip install -r requirements.txt
+          pip install --force-reinstall -r requirements.txt
         else
           pip install colorama pandas python-telegram-bot aiohttp requests python-dotenv
         fi
+        # Verificar se o pacote foi instalado corretamente
+        pip show python-telegram-bot
+        python -c "import telegram; print('✅ Telegram module imported successfully')"
 
     - name: Create .env file
       run: |
@@ -74,6 +78,11 @@ jobs:
         python db_get_bets_results.py
         echo "✅ Resultados verificados"
 
+    - name: Verify Telegram installation
+      run: |
+        pip show python-telegram-bot
+        python -c "import telegram; print(f'Telegram version: {telegram.__version__}')"
+
     - name: Step 5 - Send Telegram Notifications
       env:
         TELEGRAM_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
@@ -101,7 +110,17 @@ jobs:
       run: |
         git config --local user.email "github-actions@github.com"
         git config --local user.name "GitHub Actions"
-        git add *.db *.sqlite *.json data/ 2>/dev/null || true
+        
+        # Debug: mostrar status antes
+        echo "=== Status antes do add ==="
+        git status
+        
+        # Adiciona todos os arquivos, exceto os listados no .gitignore
+        git add .
+        
+        # Debug: mostrar status depois
+        echo "=== Status depois do add ==="
+        git status
         
         if git diff --staged --quiet; then
           echo "❌ Nenhuma mudança para commitar"

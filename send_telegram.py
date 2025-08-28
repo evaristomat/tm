@@ -160,27 +160,33 @@ class TelegramBetNotifier:
         """Busca dados de lucro por liga da tabela bets"""
         conn = sqlite3.connect(self.bets_db_path)
 
-        # Query para obter estatísticas por liga
+        # Query corrigida para cálculo de profit
         query = """
         SELECT 
             league_name,
-            SUM(CASE WHEN result = 1 THEN profit ELSE 0 END) as total_profit,
+            SUM(CASE WHEN result = 1 THEN profit 
+                    WHEN result = 0 THEN -1 
+                    ELSE 0 END) as total_profit,
             COUNT(CASE WHEN result = 1 THEN 1 END) as wins,
             COUNT(CASE WHEN result = 0 THEN 1 END) as losses,
             SUM(CASE WHEN bet_type = 'To Win' AND result = 1 THEN profit 
-                    WHEN bet_type = 'To Win' AND result = 0 THEN profit 
+                    WHEN bet_type = 'To Win' AND result = 0 THEN -1 
                     ELSE 0 END) as ml_profit,
             COUNT(CASE WHEN bet_type = 'To Win' AND result = 1 THEN 1 END) as ml_wins,
             COUNT(CASE WHEN bet_type = 'To Win' AND result = 0 THEN 1 END) as ml_losses,
             SUM(CASE WHEN bet_type = 'Total' AND result = 1 THEN profit 
-                    WHEN bet_type = 'Total' AND result = 0 THEN profit 
+                    WHEN bet_type = 'Total' AND result = 0 THEN -1 
                     ELSE 0 END) as ou_profit,
             COUNT(CASE WHEN bet_type = 'Total' AND result = 1 THEN 1 END) as ou_wins,
             COUNT(CASE WHEN bet_type = 'Total' AND result = 0 THEN 1 END) as ou_losses,
-            SUM(CASE WHEN DATE(event_time) = DATE('now', '-1 day') AND result IS NOT NULL THEN profit ELSE 0 END) as yesterday_profit,
-            SUM(CASE WHEN DATE(event_time) = DATE('now') AND result IS NOT NULL THEN profit ELSE 0 END) as today_profit
+            SUM(CASE WHEN DATE(event_time) = DATE('now', '-1 day') AND result = 1 THEN profit 
+                    WHEN DATE(event_time) = DATE('now', '-1 day') AND result = 0 THEN -1 
+                    ELSE 0 END) as yesterday_profit,
+            SUM(CASE WHEN DATE(event_time) = DATE('now') AND result = 1 THEN profit 
+                    WHEN DATE(event_time) = DATE('now') AND result = 0 THEN -1 
+                    ELSE 0 END) as today_profit
         FROM bets
-        WHERE result IS NOT NULL  -- Apenas apostas com resultado definido
+        WHERE result IS NOT NULL
         GROUP BY league_name
         """
 

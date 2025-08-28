@@ -71,7 +71,7 @@ jobs:
     - name: Step 4 - Check Bet Results
       run: |
         echo "=== 4. Verificando resultados das apostas ==="
-        python db_get_bets_results.py
+        python db_get_bet_results.py
         echo "✅ Resultados verificados"
 
     - name: Step 5 - Send Telegram Notifications

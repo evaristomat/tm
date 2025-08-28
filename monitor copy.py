@@ -69,34 +69,17 @@ class Bet365Client:
     def __init__(self):
         self.base_url = os.getenv("BASE_URL", "https://api.betsapi.com/v1")
         self.base_url_v3 = os.getenv("BASE_URL_V3", "https://api.b365api.com/v3")
-        # Tentar múltiplas variáveis de ambiente
-        self.api_key = (
-            os.getenv("API_KEY")
-            or os.getenv("BETSAPI_API_KEY")
-            or os.getenv("BETS_API_KEY")
-        )
+        self.api_key = os.getenv("BETSAPI_API_KEY")
         self.request_timeout = int(os.getenv("REQUEST_TIMEOUT", "30"))
         self.client = httpx.AsyncClient(timeout=self.request_timeout)
         self.semaphore = asyncio.Semaphore(10)
         self.requests_count = 0
-
-        # Debug da API key
-        if not self.api_key:
-            logger.error("API Key não encontrada! Variáveis disponíveis:")
-            for key in os.environ.keys():
-                if "API" in key.upper() or "KEY" in key.upper():
-                    logger.error(f"  - {key}")
-        else:
-            logger.info(f"API Key carregada: {self.api_key[:10]}...")
 
     async def _make_request(
         self, endpoint: str, params: dict = None, version: str = "v1"
     ) -> dict:
         if params is None:
             params = {}
-
-        if not self.api_key:
-            raise BetsAPIError("API Key não configurada")
 
         params["token"] = self.api_key
 
@@ -163,6 +146,7 @@ class SimplifiedDatabase:
             conn = sqlite3.connect(self.db_name)
             cursor = conn.cursor()
 
+            # Verificar se a tabela events existe e contar registros
             cursor.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='events'"
             )

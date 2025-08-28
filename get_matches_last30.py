@@ -14,7 +14,12 @@ load_dotenv()
 class TableTennisResults:
     def __init__(self, db_path="table_tennis_results.db"):
         self.db_path = db_path
-        self.api_key = os.getenv("BETSAPI_API_KEY")
+        # Tentar múltiplas variáveis de ambiente
+        self.api_key = (
+            os.getenv("API_KEY")
+            or os.getenv("BETSAPI_API_KEY")
+            or os.getenv("BETS_API_KEY")
+        )
         self.leagues = {
             10048210: "Czech Liga Pro",
             10068516: "Challenger Series TT",
@@ -30,7 +35,6 @@ class TableTennisResults:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
-        # Tabela principal de eventos
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -57,7 +61,6 @@ class TableTennisResults:
         )
         """)
 
-        # Tabela de scores por set
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS event_scores (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -78,11 +81,7 @@ class TableTennisResults:
         current_time = time.time()
         elapsed = current_time - self.last_request_time
 
-        # Limite de 3600 requisições por minuto = 60 por segundo
-        # Vamos ser conservadores e usar 50 por segundo para dar margem de segurança
-        min_interval = (
-            0.02  # 50 requisições por segundo (0.02 segundos entre requisições)
-        )
+        min_interval = 0.02
 
         if elapsed < min_interval:
             time.sleep(min_interval - elapsed)
@@ -92,7 +91,6 @@ class TableTennisResults:
             self.last_request_time = time.time()
             self.request_count += 1
 
-            # Log a cada 100 requisições
             if self.request_count % 100 == 0:
                 print(f"📊 Total de requisições: {self.request_count}")
 
@@ -104,7 +102,11 @@ class TableTennisResults:
     def get_events_from_leagues(self, days=30):
         """Coleta eventos das ligas de tênis de mesa dos últimos N dias"""
         if not self.api_key:
-            print("❌ BETSAPI_API_KEY não encontrada nas variáveis de ambiente")
+            print("❌ API_KEY não encontrada nas variáveis de ambiente")
+            print("Variáveis disponíveis:")
+            for key in os.environ.keys():
+                if "API" in key.upper() or "KEY" in key.upper():
+                    print(f"  - {key}")
             return []
 
         all_events = []
@@ -113,7 +115,6 @@ class TableTennisResults:
         print(f"COLETANDO EVENTOS DE TÊNIS DE MESA - ÚLTIMOS {days} DIAS")
         print("=" * 70)
 
-        # Coletar eventos para cada dia
         for i in range(days):
             target_date = (datetime.now() - timedelta(days=i)).strftime("%Y%m%d")
             print(f"\n📅 Buscando eventos para: {target_date}")
@@ -155,10 +156,9 @@ class TableTennisResults:
     def get_event_results_batch(self, event_ids):
         """Busca resultados para um lote de event_ids (máximo 10 por requisição)"""
         if not self.api_key:
-            print("❌ BETSAPI_API_KEY não encontrada")
+            print("❌ API_KEY não encontrada")
             return []
 
-        # Limitar a 10 event_ids por requisição
         if len(event_ids) > 10:
             event_ids = event_ids[:10]
 
@@ -188,22 +188,18 @@ class TableTennisResults:
         """Busca resultados para todos os event_ids usando multi-threading"""
         all_results = []
 
-        # Dividir event_ids em lotes de 10
         batches = [event_ids[i : i + 10] for i in range(0, len(event_ids), 10)]
 
         print(
             f"\n📊 Buscando resultados para {len(event_ids)} eventos em {len(batches)} lotes..."
         )
 
-        # Usar multi-threading para processar os lotes em paralelo
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Enviar todos os lotes para processamento
             future_to_batch = {
                 executor.submit(self.get_event_results_batch, batch): batch
                 for batch in batches
             }
 
-            # Coletar resultados conforme ficam prontos
             for future in as_completed(future_to_batch):
                 batch = future_to_batch[future]
                 try:
@@ -229,17 +225,13 @@ class TableTennisResults:
         for result in results:
             event_id = result.get("id")
 
-            # Verificar se o evento já existe
             cursor.execute("SELECT id FROM events WHERE event_id = ?", (event_id,))
             if cursor.fetchone():
-                print(f"⏭️  Evento {event_id} já existe, pulando...")
                 continue
 
             try:
-                # Extrair dados do estádio
                 stadium_data = result.get("extra", {}).get("stadium_data", {})
 
-                # Inserir evento principal
                 cursor.execute(
                     """
                 INSERT INTO events (
@@ -272,7 +264,6 @@ class TableTennisResults:
                     ),
                 )
 
-                # Inserir scores por set
                 scores = result.get("scores", {})
                 for set_num, score_data in scores.items():
                     try:
@@ -290,7 +281,6 @@ class TableTennisResults:
                             ),
                         )
                     except (ValueError, TypeError):
-                        # Ignorar sets com valores inválidos
                         continue
 
                 saved_count += 1
@@ -309,7 +299,6 @@ class TableTennisResults:
         """Analisa os resultados armazenados no banco de dados"""
         conn = sqlite3.connect(self.db_path)
 
-        # Verificar se há dados
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM events")
         event_count = cursor.fetchone()[0]
@@ -322,18 +311,11 @@ class TableTennisResults:
         print("\n📊 ANÁLISE DOS RESULTADOS ARMAZENADOS")
         print("=" * 60)
 
-        # Carregar dados
         events_df = pd.read_sql_query("SELECT * FROM events", conn)
-        scores_df = pd.read_sql_query("SELECT * FROM event_scores", conn)
 
-        # Estatísticas básicas
         print(f"📈 Total de eventos: {len(events_df)}")
         print(f"🏆 Ligas representadas: {events_df['league_name'].nunique()}")
-        print(
-            f"👥 Times únicos: {events_df['home_name'].nunique() + events_df['away_name'].nunique()}"
-        )
 
-        # Distribuição por liga
         print("\n📋 DISTRIBUIÇÃO POR LIGA:")
         league_stats = events_df["league_name"].value_counts().reset_index()
         league_stats.columns = ["Liga", "Eventos"]
@@ -342,48 +324,24 @@ class TableTennisResults:
         ).round(1)
         print(league_stats.to_string(index=False))
 
-        # Estatísticas de sets
-        print("\n🎯 ESTATÍSTICAS DE SETS:")
-        if not scores_df.empty:
-            set_stats = scores_df.groupby("set_number").size().reset_index(name="Jogos")
-            print("Sets com pontuação registrada:")
-            print(set_stats.to_string(index=False))
-
-        # Exemplo de resultados recentes
-        print("\n👀 EXEMPLOS DE RESULTADOS RECENTES:")
-        recent_results = events_df[
-            ["home_name", "score", "away_name", "league_name"]
-        ].head(5)
-        for _, row in recent_results.iterrows():
-            print(
-                f"   {row['home_name']} {row['score']} {row['away_name']} ({row['league_name']})"
-            )
-
         conn.close()
 
 
 def main():
-    # Inicializar coletor
     collector = TableTennisResults()
 
-    # Coletar eventos dos últimos 30 dias
     events = collector.get_events_from_leagues(days=3)
 
     if not events:
         print("❌ Nenhum evento encontrado")
         return
 
-    # Extrair IDs dos eventos
     event_ids = [event["id"] for event in events]
     print(f"\n📋 Total de {len(event_ids)} eventos encontrados")
 
-    # Buscar resultados usando multi-threading
     results = collector.get_all_event_results(event_ids, max_workers=5)
 
-    # Salvar resultados no banco de dados
     collector.save_results_to_db(results)
-
-    # Analisar resultados
     collector.analyze_results()
 
     print(f"\n📊 Total de requisições realizadas: {collector.request_count}")

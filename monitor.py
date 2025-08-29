@@ -248,7 +248,14 @@ class SimplifiedDatabase:
             home_team = event.get("home", {}).get("name", "")
             away_team = event.get("away", {}).get("name", "")
             league_id = event.get("league_id")
+
+            # Converter event_time para inteiro se necessário
             event_time = event.get("time", 0)
+            if isinstance(event_time, str):
+                try:
+                    event_time = int(event_time)
+                except (ValueError, TypeError):
+                    event_time = 0
 
             time_start = event_time - (time_threshold_hours * 3600)
             time_end = event_time + (time_threshold_hours * 3600)
@@ -323,8 +330,16 @@ class SimplifiedDatabase:
             cursor = conn.cursor()
 
             event_id = event.get("id")
+            
+            # Converter event_time para inteiro se necessário
+            event_time = event.get("time", 0)
+            if isinstance(event_time, str):
+                try:
+                    event_time = int(event_time)
+                except (ValueError, TypeError):
+                    event_time = 0
 
-            # Verificar se já existe por ID
+            # Resto do código permanece o mesmo...
             cursor.execute("SELECT id FROM events WHERE id = ?", (event_id,))
             existing_event = cursor.fetchone()
 
@@ -337,7 +352,7 @@ class SimplifiedDatabase:
                     WHERE id = ?
                 """,
                     (
-                        event.get("time", 0),
+                        event_time,  # Usar a variável convertida
                         event.get("time_status", 0),
                         event.get("league_id"),
                         event.get("league_name", ""),

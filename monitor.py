@@ -330,7 +330,7 @@ class SimplifiedDatabase:
             cursor = conn.cursor()
 
             event_id = event.get("id")
-            
+
             # Converter event_time para inteiro se necessário
             event_time = event.get("time", 0)
             if isinstance(event_time, str):
@@ -339,7 +339,7 @@ class SimplifiedDatabase:
                 except (ValueError, TypeError):
                     event_time = 0
 
-            # Resto do código permanece o mesmo...
+            # Verificar se já existe por ID
             cursor.execute("SELECT id FROM events WHERE id = ?", (event_id,))
             existing_event = cursor.fetchone()
 
@@ -352,7 +352,7 @@ class SimplifiedDatabase:
                     WHERE id = ?
                 """,
                     (
-                        event_time,  # Usar a variável convertida
+                        event_time,
                         event.get("time_status", 0),
                         event.get("league_id"),
                         event.get("league_name", ""),
@@ -384,7 +384,7 @@ class SimplifiedDatabase:
             """,
                 (
                     event_id,
-                    event.get("time", 0),
+                    event_time,
                     event.get("time_status", 0),
                     event.get("league_id"),
                     event.get("league_name", ""),
@@ -669,13 +669,17 @@ class TableTennisMonitor:
         for league_id, league_name in self.leagues.items():
             logger.info(f"Verificando liga: {league_name}")
             league_events = 0
+            league_pages = 0
+            league_days = 0
 
             try:
                 for i in range(days_ahead):
                     day = (datetime.now() + timedelta(days=i)).strftime("%Y%m%d")
                     page = 1
+                    has_more_pages = True
+                    day_events = 0
 
-                    while True:
+                    while has_more_pages:
                         response = await self.client.upcoming(
                             sport_id=self.sport_id,
                             league_id=league_id,
@@ -684,10 +688,14 @@ class TableTennisMonitor:
                         )
 
                         if not response.get("success", 1) or "results" not in response:
+                            logger.debug(f"  → Sem resultados para {day} página {page}")
                             break
 
                         results = response["results"]
                         if not results:
+                            logger.debug(
+                                f"  → Resultados vazios para {day} página {page}"
+                            )
                             break
 
                         new_events = []
@@ -707,24 +715,32 @@ class TableTennisMonitor:
                             new_events.append(event)
                             seen_event_ids.add(event_id)
                             league_events += 1
+                            day_events += 1
 
                         all_matches.extend(new_events)
+                        league_pages += 1
 
                         pager = response.get("pager", {})
                         if page >= pager.get("total", 1):
-                            break
+                            has_more_pages = False
+                        else:
+                            page += 1
+                            await asyncio.sleep(0.3)
 
-                        page += 1
-                        await asyncio.sleep(0.3)
+                    if day_events > 0:
+                        logger.info(f"  → Dia {day}: {day_events} eventos")
+                        league_days += 1
 
             except Exception as e:
                 logger.error(f"Erro na liga {league_name}: {e}")
                 continue
 
             if league_events > 0:
-                logger.info(f"  → {league_events} eventos encontrados em {league_name}")
+                logger.info(
+                    f"  → {league_events} eventos encontrados em {league_name} ({league_days} dias, {league_pages} páginas)"
+                )
             else:
-                logger.debug(f"  → Nenhum novo evento em {league_name}")
+                logger.info(f"  → Nenhum evento novo em {league_name}")
 
         return all_matches
 

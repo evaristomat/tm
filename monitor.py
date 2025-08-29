@@ -155,6 +155,7 @@ class SimplifiedDatabase:
         self.existing_events_count = 0
         self.new_odds_count = 0
         self.existing_odds_count = 0
+        self.duplicate_events_count = 0
         self.init_database()
 
     def init_database(self):
@@ -233,7 +234,53 @@ class SimplifiedDatabase:
             "existing_events": self.existing_events_count,
             "new_odds": self.new_odds_count,
             "existing_odds": self.existing_odds_count,
+            "duplicate_events": self.duplicate_events_count,
         }
+
+    def find_similar_event(
+        self, event: dict, time_threshold_hours: int = 6
+    ) -> Optional[str]:
+        """Procura por evento similar (mesmo confronto em período próximo)"""
+        try:
+            conn = sqlite3.connect(self.db_name)
+            cursor = conn.cursor()
+
+            home_team = event.get("home", {}).get("name", "")
+            away_team = event.get("away", {}).get("name", "")
+            league_id = event.get("league_id")
+            event_time = event.get("time", 0)
+
+            time_start = event_time - (time_threshold_hours * 3600)
+            time_end = event_time + (time_threshold_hours * 3600)
+
+            cursor.execute(
+                """
+                SELECT id FROM events 
+                WHERE league_id = ? 
+                AND home_team = ? 
+                AND away_team = ? 
+                AND time BETWEEN ? AND ?
+                AND id != ?
+                LIMIT 1
+            """,
+                (
+                    league_id,
+                    home_team,
+                    away_team,
+                    time_start,
+                    time_end,
+                    event.get("id"),
+                ),
+            )
+
+            result = cursor.fetchone()
+            conn.close()
+
+            return result[0] if result else None
+
+        except Exception as e:
+            logger.error(f"Erro ao buscar evento similar: {e}")
+            return None
 
     def event_exists(self, event_id: str) -> bool:
         """Verifica se um evento já existe no banco de dados"""
@@ -275,7 +322,10 @@ class SimplifiedDatabase:
             conn = sqlite3.connect(self.db_name)
             cursor = conn.cursor()
 
-            cursor.execute("SELECT id FROM events WHERE id = ?", (event.get("id"),))
+            event_id = event.get("id")
+
+            # Verificar se já existe por ID
+            cursor.execute("SELECT id FROM events WHERE id = ?", (event_id,))
             existing_event = cursor.fetchone()
 
             if existing_event:
@@ -293,36 +343,46 @@ class SimplifiedDatabase:
                         event.get("league_name", ""),
                         event.get("home", {}).get("name", ""),
                         event.get("away", {}).get("name", ""),
-                        event.get("id"),
+                        event_id,
                     ),
                 )
                 conn.commit()
                 self.existing_events_count += 1
-                logger.debug(f"Evento atualizado: {event.get('id')}")
+                logger.debug(f"Evento atualizado: {event_id}")
                 return False
-            else:
-                cursor.execute(
-                    """
-                    INSERT INTO events 
-                    (id, time, time_status, league_id, league_name, home_team, away_team)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                    (
-                        event.get("id"),
-                        event.get("time", 0),
-                        event.get("time_status", 0),
-                        event.get("league_id"),
-                        event.get("league_name", ""),
-                        event.get("home", {}).get("name", ""),
-                        event.get("away", {}).get("name", ""),
-                    ),
+
+            # Verificar se é duplicata por confronto e horário
+            similar_event_id = self.find_similar_event(event)
+            if similar_event_id:
+                self.duplicate_events_count += 1
+                logger.warning(
+                    f"Evento duplicado ignorado: {event.get('home', {}).get('name', '')} vs {event.get('away', {}).get('name', '')} (similar to {similar_event_id})"
                 )
-                conn.commit()
-                self.new_events_count += 1
-                logger.info(
-                    f"Novo evento: {event.get('home', {}).get('name', '')} vs {event.get('away', {}).get('name', '')}"
-                )
-                return True
+                return False
+
+            # Inserir novo evento
+            cursor.execute(
+                """
+                INSERT INTO events 
+                (id, time, time_status, league_id, league_name, home_team, away_team)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+                (
+                    event_id,
+                    event.get("time", 0),
+                    event.get("time_status", 0),
+                    event.get("league_id"),
+                    event.get("league_name", ""),
+                    event.get("home", {}).get("name", ""),
+                    event.get("away", {}).get("name", ""),
+                ),
+            )
+            conn.commit()
+            self.new_events_count += 1
+            logger.info(
+                f"Novo evento: {event.get('home', {}).get('name', '')} vs {event.get('away', {}).get('name', '')}"
+            )
+            return True
 
         except Exception as e:
             logger.error(f"Erro ao salvar evento: {e}")
@@ -719,6 +779,7 @@ class TableTennisMonitor:
         logger.info("📈 Estatísticas da sessão:")
         logger.info(f"   → Novos eventos: {stats['new_events']}")
         logger.info(f"   → Eventos existentes: {stats['existing_events']}")
+        logger.info(f"   → Eventos duplicados: {stats['duplicate_events']}")
         logger.info(f"   → Novas odds: {stats['new_odds']}")
         logger.info(f"   → Odds existentes: {stats['existing_odds']}")
         logger.info(f"   → Requisições API: {self.client.requests_count}")

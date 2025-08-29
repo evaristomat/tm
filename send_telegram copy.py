@@ -13,6 +13,7 @@ try:
 
     load_dotenv()
 except ImportError:
+    # Fallback caso dotenv não esteja disponível
     pass
 
 logging.basicConfig(
@@ -23,26 +24,37 @@ logger = logging.getLogger("telegram_notifier")
 
 class TelegramBetNotifier:
     def __init__(self, bot_token=None, chat_id=None, bets_db_path="bets.db"):
+        # Usar variáveis de ambiente se não fornecidas
         self.bot_token = bot_token or os.getenv("TELEGRAM_BOT_TOKEN")
         self.chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID")
 
+        # Validar se as variáveis foram carregadas
         if not self.bot_token:
-            raise ValueError("TELEGRAM_BOT_TOKEN não encontrado!")
+            raise ValueError(
+                "TELEGRAM_BOT_TOKEN não encontrado! Configure no .env ou passe como parâmetro."
+            )
 
         if not self.chat_id:
-            raise ValueError("TELEGRAM_CHAT_ID não encontrado!")
+            raise ValueError(
+                "TELEGRAM_CHAT_ID não encontrado! Configure no .env ou passe como parâmetro."
+            )
 
         self.bets_db_path = bets_db_path
         self.bot = Bot(token=self.bot_token)
         self.init_telegram_db()
 
         logger.info("✅ TelegramBetNotifier inicializado com sucesso")
+        logger.info(f"📱 Chat ID: {self.chat_id}")
+        logger.info(
+            f"🤖 Bot Token: {self.bot_token[:10]}..."
+        )  # Mostrar apenas início do token
 
     def init_telegram_db(self):
         """Inicializa tabelas de controle do telegram"""
         conn = sqlite3.connect(self.bets_db_path)
         cursor = conn.cursor()
 
+        # Tabela para controlar apostas já enviadas
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS telegram_sent_bets (
             bet_id INTEGER PRIMARY KEY,
@@ -51,6 +63,7 @@ class TelegramBetNotifier:
         )
         """)
 
+        # Tabela para controlar limite diário por liga
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS telegram_daily_limit (
             league_name TEXT,
@@ -147,6 +160,7 @@ class TelegramBetNotifier:
         """Busca dados de lucro por liga da tabela bets"""
         conn = sqlite3.connect(self.bets_db_path)
 
+        # Query corrigida para cálculo de profit
         query = """
         SELECT 
             league_name,
@@ -170,8 +184,7 @@ class TelegramBetNotifier:
                     ELSE 0 END) as yesterday_profit,
             SUM(CASE WHEN DATE(event_time) = DATE('now') AND result = 1 THEN profit 
                     WHEN DATE(event_time) = DATE('now') AND result = 0 THEN -1 
-                    ELSE 0 END) as today_profit,
-            COUNT(*) as total_stake  -- Como stake é sempre 1, usamos a contagem de apostas
+                    ELSE 0 END) as today_profit
         FROM bets
         WHERE result IS NOT NULL
         GROUP BY league_name
@@ -192,9 +205,10 @@ class TelegramBetNotifier:
         if profit_data.empty:
             return "📊 Nenhum dado de lucro disponível ainda."
 
-        message = "💰 *RESUMO DE LUCROS* 💰\n"
-        message += "══════════════════════════════════\n\n"
+        message = "💰 RESUMO DE LUCROS\n"
+        message += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
 
+        # Mapear nomes das ligas para países com bandeiras
         league_flags = {
             "Czech Liga Pro": "🇨🇿 República Tcheca - Liga Pro",
             "TT Elite Series": "🇵🇱 TT Elite Series",
@@ -205,7 +219,6 @@ class TelegramBetNotifier:
         total_profit = 0
         total_wins = 0
         total_losses = 0
-        total_stake = 0
         total_ml_profit = 0
         total_ml_wins = 0
         total_ml_losses = 0
@@ -218,30 +231,23 @@ class TelegramBetNotifier:
                 row["league_name"], f"🏓 {row['league_name']}"
             )
 
-            # Calcular ROI corretamente
+            # Calcular ROI
+            total_bets = row["wins"] + row["losses"]
             roi = (
-                (row["total_profit"] / row["total_stake"]) * 100
-                if row["total_stake"] > 0
-                else 0
+                (row["total_profit"] / (total_bets)) * 100 if total_bets > 0 else 0
             )
-
-            # Escolher emoji baseado no resultado
-            result_emoji = "✅" if row["total_profit"] > 0 else "❌"
 
             message += f"{league_display}\n"
             message += f"├ Ontem: {row['yesterday_profit']:.2f}u\n"
             message += f"├ Hoje: {row['today_profit']:.2f}u\n"
-            message += f"├ {result_emoji} Total: {row['total_profit']:+.2f}u (ROI: {roi:+.1f}%) | {row['wins']}W-{row['losses']}L\n"
-            message += (
-                f"├ ML: {row['ml_profit']:+.2f}u | {row['ml_wins']}W-{row['ml_losses']}L\n"
-            )
+            message += f"├ Total: {row['total_profit']:+.2f}u (ROI: {roi:+.1f}%) | {row['wins']}W-{row['losses']}L\n"
+            message += f"├ ML: {row['ml_profit']:+.2f}u | {row['ml_wins']}W-{row['ml_losses']}L\n"
             message += f"└ O/U: {row['ou_profit']:+.2f}u | {row['ou_wins']}W-{row['ou_losses']}L\n\n"
 
             # Acumular totais
             total_profit += row["total_profit"]
             total_wins += row["wins"]
             total_losses += row["losses"]
-            total_stake += row["total_stake"]
             total_ml_profit += row["ml_profit"]
             total_ml_wins += row["ml_wins"]
             total_ml_losses += row["ml_losses"]
@@ -249,26 +255,31 @@ class TelegramBetNotifier:
             total_ou_wins += row["ou_wins"]
             total_ou_losses += row["ou_losses"]
 
-        # Calcular ROI total corretamente
-        total_roi = (total_profit / total_stake) * 100 if total_stake > 0 else 0
-        total_emoji = "✅" if total_profit > 0 else "❌"
+        # Calcular ROI total
+        total_bets = total_wins + total_losses
+        total_roi = (total_profit / (total_bets * 10)) * 100 if total_bets > 0 else 0
 
-        message += "══════════════════════════════════\n"
-        message += "📊 *TOTAL GERAL*\n"
-        message += f"{total_emoji} {total_profit:+.2f}u (ROI: {total_roi:+.1f}%)\n"
+        message += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        message += "📊 TOTAL GERAL\n"
+        message += f"💚 {total_profit:+.2f}u (ROI: {total_roi:+.1f}%)\n"
         message += f"✅ {total_wins}W | ❌ {total_losses}L\n"
-        message += f"├ ML: {total_ml_profit:+.2f}u | {total_ml_wins}W-{total_ml_losses}L\n"
-        message += f"└ O/U: {total_ou_profit:+.2f}u | {total_ou_wins}W-{total_ou_losses}L\n"
+        message += (
+            f"├ ML: {total_ml_profit:+.2f}u | {total_ml_wins}W-{total_ml_losses}L\n"
+        )
+        message += (
+            f"└ O/U: {total_ou_profit:+.2f}u | {total_ou_wins}W-{total_ou_losses}L\n"
+        )
 
         return message
 
     def format_bet_message(self, league_bets):
-        """Formata mensagem para uma liga com separação por tipo de aposta"""
+        """Formata mensagem para uma liga"""
         if league_bets.empty:
             return None
 
         league_name = league_bets.iloc[0]["league_name"]
 
+        # Mapear nomes das ligas para países com bandeiras
         league_flags = {
             "Czech Liga Pro": "🇨🇿 República Tcheca - Liga Pro",
             "Challenger Series TT": "🏓 Challenger Series TT",
@@ -282,48 +293,54 @@ class TelegramBetNotifier:
         to_win_bets = league_bets[league_bets["bet_type"] == "To Win"]
         total_bets = league_bets[league_bets["bet_type"] == "Total"]
 
-        message = f"⭐ *{league_display}* ⭐\n"
-        message += "┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n\n"
+        messages = []
 
-        # Seção Money Line
-        if not to_win_bets.empty:
-            message += "💰 *MONEY LINE* 💰\n"
-            for _, bet in to_win_bets.iterrows():
-                event_time = pd.to_datetime(bet["event_time"]).strftime("%d/%m %H:%M")
+        # Apostas To Win
+        for _, bet in to_win_bets.iterrows():
+            # CORREÇÃO AQUI: Adicionar data ao formato
+            event_time = pd.to_datetime(bet["event_time"]).strftime("%d/%m %H:%M")
 
-                if bet["selection"] == "Home":
-                    tip = bet["home_team"]
-                else:
-                    tip = bet["away_team"]
+            # Determinar o TIP baseado na seleção
+            if bet["selection"] == "Home":
+                tip = bet["home_team"]
+            else:
+                tip = bet["away_team"]
 
-                message += f"🏓 {bet['home_team']} vs {bet['away_team']}\n"
-                message += f"🎯 TIP: {tip}\n"
-                message += f"🎲 Odds: {bet['odds']:.2f} | 📅 {event_time}\n"
-                message += f"📊 ROI: {bet['estimated_roi']:.1f}%\n"
-                message += "┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
+            msg = "┈" * 30 + "\n"
+            msg += f"🏓 {bet['home_team']} vs {bet['away_team']}\n"
+            msg += f"🎯 TIP: {tip}\n"
+            msg += f"🎲 Odds: {bet['odds']:.2f} | 📅 {event_time}\n"
+            msg += f"{league_display} | 📊 ROI: {bet['estimated_roi']:.1f}%\n"
+            messages.append(msg)
 
-        # Seção Over/Under
-        if not total_bets.empty:
-            message += "🔢 *OVER/UNDER* 🔢\n"
-            for _, bet in total_bets.iterrows():
-                event_time = pd.to_datetime(bet["event_time"]).strftime("%d/%m %H:%M")
-                tip = f"{bet['selection']} {bet['handicap']:.1f}"
+        # Apostas Total
+        for _, bet in total_bets.iterrows():
+            # CORREÇÃO AQUI: Adicionar data ao formato
+            event_time = pd.to_datetime(bet["event_time"]).strftime("%d/%m %H:%M")
 
-                message += f"🏓 {bet['home_team']} vs {bet['away_team']}\n"
-                message += f"🎯 TIP: {tip}\n"
-                message += f"🎲 Odds: {bet['odds']:.2f} | 📅 {event_time}\n"
-                message += f"📊 ROI: {bet['estimated_roi']:.1f}%\n"
-                message += "┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
+            # Formatar o TIP para totais
+            tip = f"{bet['selection']} {bet['handicap']:.1f}"
 
-        return message
+            msg = "┈" * 30 + "\n"
+            msg += f"🏓 {bet['home_team']} vs {bet['away_team']}\n"
+            msg += f"🎯 TIP: {tip}\n"
+            msg += f"🎲 Odds: {bet['odds']:.2f} | 📅 {event_time}\n"
+            msg += f"{league_display} | 📊 ROI: {bet['estimated_roi']:.1f}%\n"
+            messages.append(msg)
 
-    async def send_message(self, message, parse_mode=ParseMode.MARKDOWN):
+        # Juntar todas as mensagens
+        if messages:
+            return "".join(messages) + "┈" * 30
+
+        return None
+
+    async def send_message(self, message):
         """Envia mensagem para o Telegram"""
         try:
             await self.bot.send_message(
                 chat_id=self.chat_id,
                 text=message,
-                parse_mode=parse_mode,
+                parse_mode=None,
             )
             return True
         except Exception as e:
@@ -334,6 +351,7 @@ class TelegramBetNotifier:
         """Processa e envia apostas não enviadas"""
         today = datetime.now().date()
 
+        # Buscar apostas não enviadas
         unsent_bets = self.get_unsent_bets()
 
         if unsent_bets.empty:
@@ -342,29 +360,38 @@ class TelegramBetNotifier:
 
         logger.info(f"Total de apostas não enviadas: {len(unsent_bets)}")
 
+        # Agrupar por liga
         leagues = unsent_bets["league_name"].unique()
+
         total_sent = 0
 
         for league in leagues:
+            # Verificar limite diário
             daily_count = self.get_daily_count(league, today)
 
             if daily_count >= 20:
                 logger.info(f"Liga {league} já atingiu limite diário (20 apostas)")
                 continue
 
+            # Filtrar apostas da liga
             league_bets = unsent_bets[unsent_bets["league_name"] == league]
+
+            # Limitar ao que falta para 20
             remaining = 20 - daily_count
             league_bets = league_bets.head(remaining)
 
             if league_bets.empty:
                 continue
 
+            # Formatar mensagem
             message = self.format_bet_message(league_bets)
 
             if message:
+                # Enviar mensagem
                 success = await self.send_message(message)
 
                 if success:
+                    # Marcar apostas como enviadas
                     for bet_id in league_bets["id"]:
                         self.mark_as_sent(bet_id)
                         self.update_daily_count(league, today)
@@ -373,11 +400,48 @@ class TelegramBetNotifier:
                     logger.info(
                         f"✅ Enviadas {len(league_bets)} apostas da liga {league}"
                     )
+
+                    # Delay entre mensagens para evitar flood
                     await asyncio.sleep(2)
                 else:
                     logger.error(f"Falha ao enviar apostas da liga {league}")
 
         logger.info(f"Total de apostas enviadas: {total_sent}")
+
+    async def send_daily_summary(self):
+        """Envia resumo diário opcional"""
+        conn = sqlite3.connect(self.bets_db_path)
+
+        query = """
+        SELECT 
+            league_name,
+            COUNT(*) as total_bets,
+            AVG(estimated_roi) as avg_roi,
+            MAX(estimated_roi) as max_roi
+        FROM bets b
+        JOIN telegram_sent_bets t ON b.id = t.bet_id
+        WHERE DATE(t.sent_at) = DATE('now')
+        GROUP BY league_name
+        """
+
+        df = pd.read_sql_query(query, conn)
+        conn.close()
+
+        if df.empty:
+            return
+
+        message = "📊 RESUMO DIÁRIO\n"
+        message += "═" * 30 + "\n\n"
+
+        for _, row in df.iterrows():
+            message += f"{row['league_name']}\n"
+            message += f"  • Total: {row['total_bets']} apostas\n"
+            message += f"  • ROI Médio: {row['avg_roi']:.1f}%\n"
+            message += f"  • ROI Máximo: {row['max_roi']:.1f}%\n\n"
+
+        message += "═" * 30
+
+        await self.send_message(message)
 
     async def send_profit_summary(self):
         """Envia resumo de lucros"""
@@ -388,7 +452,7 @@ class TelegramBetNotifier:
             await self.bot.send_message(
                 chat_id=self.chat_id,
                 text=message,
-                parse_mode=ParseMode.MARKDOWN,
+                parse_mode=None,
             )
             logger.info("✅ Resumo de lucros enviado com sucesso!")
         except Exception as e:
@@ -414,14 +478,25 @@ def validate_env_vars():
 
 async def main():
     """Função principal"""
+    # Validar variáveis de ambiente
     if not validate_env_vars():
         logger.error("❌ Erro: Variáveis de ambiente não configuradas!")
+        logger.error("Configure TELEGRAM_BOT_TOKEN e TELEGRAM_CHAT_ID no arquivo .env")
         return
 
     try:
+        # Inicializar notificador (sem passar parâmetros, vai usar .env)
         notifier = TelegramBetNotifier()
+
+        # Processar e enviar apostas
         await notifier.process_and_send_bets()
+
+        # Enviar resumo de lucros
         await notifier.send_profit_summary()
+
+        # Opcional: enviar resumo diário
+        # await notifier.send_daily_summary()
+
         logger.info("✅ Execução concluída com sucesso!")
 
     except Exception as e:

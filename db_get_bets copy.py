@@ -74,11 +74,13 @@ class BetProcessor:
     def get_all_upcoming_matches(self):
         conn = sqlite3.connect(self.tm_db_path)
 
+        # Obter IDs já processados primeiro
         processed_ids = self.get_processed_event_ids()
 
         upcoming_matches = []
 
         for league_id, league_name in self.leagues.items():
+            # Já filtrar eventos processados na query SQL
             if processed_ids:
                 query = """
                 SELECT id, league_name, home_team, away_team, time 
@@ -127,6 +129,7 @@ class BetProcessor:
             conn.commit()
             return True
         except sqlite3.IntegrityError:
+            # Evento já foi marcado como processado
             return False
         finally:
             conn.close()
@@ -326,57 +329,13 @@ class BetProcessor:
         roi = (estimated_prob * (odds - 1)) - (1 - estimated_prob)
         return roi * 100
 
-    def filter_conflicting_bets(self, valuable_bets, home_player, away_player):
-        home_bets = [
-            b
-            for b in valuable_bets
-            if b["bet_type"] == "To Win" and b["selection"] == "Home"
-        ]
-        away_bets = [
-            b
-            for b in valuable_bets
-            if b["bet_type"] == "To Win" and b["selection"] == "Away"
-        ]
-        other_bets = [b for b in valuable_bets if b["bet_type"] != "To Win"]
-
-        if not home_bets or not away_bets:
-            return valuable_bets
-
-        h2h_stats = self.get_head_to_head_stats(home_player, away_player)
-
-        if h2h_stats["total_matches"] > 0:
-            if h2h_stats["player1_wins"] > h2h_stats["player2_wins"]:
-                logger.info(
-                    f"H2H: {home_player} tem mais vitórias ({h2h_stats['player1_wins']} vs {h2h_stats['player2_wins']})"
-                )
-                return home_bets + other_bets
-            else:
-                logger.info(
-                    f"H2H: {away_player} tem mais vitórias ({h2h_stats['player2_wins']} vs {h2h_stats['player1_wins']})"
-                )
-                return away_bets + other_bets
-        else:
-            home_roi = max(b["estimated_roi"] for b in home_bets)
-            away_roi = max(b["estimated_roi"] for b in away_bets)
-
-            if home_roi > away_roi:
-                logger.info(
-                    f"ROI: Home tem maior ROI ({home_roi:.2f}% vs {away_roi:.2f}%)"
-                )
-                return home_bets + other_bets
-            else:
-                logger.info(
-                    f"ROI: Away tem maior ROI ({away_roi:.2f}% vs {home_roi:.2f}%)"
-                )
-                return away_bets + other_bets
-
     def analyze_bet_value(self, match, odds_df):
         home_player = match["home_team"]
         away_player = match["away_team"]
 
-        logger.info(f"Analisando jogo: {home_player} vs {away_player}")
-        logger.info(f"Liga: {match['league_name']}")
-        logger.info(f"Event ID: {match['event_id']}")
+        logger.info(f"🔍 ANALISANDO JOGO: {home_player} vs {away_player}")
+        logger.info(f"   Liga: {match['league_name']}")
+        logger.info(f"   Event ID: {match['event_id']}")
 
         home_matches = self.get_player_last_10_matches(home_player)
         home_stats = self.calculate_player_stats(home_player, home_matches)
@@ -535,9 +494,6 @@ class BetProcessor:
                             }
                         )
 
-        valuable_bets = self.filter_conflicting_bets(
-            valuable_bets, home_player, away_player
-        )
         return valuable_bets
 
     def save_valuable_bets(self, valuable_bets):
@@ -581,29 +537,33 @@ class BetProcessor:
         return saved_count
 
     def process_all_matches(self):
-        logger.info("Iniciando processamento de jogos...")
+        logger.info("🔄 Iniciando processamento de jogos...")
 
+        # Obter apenas jogos não processados
         unprocessed_matches = self.get_all_upcoming_matches()
-        logger.info(f"Jogos novos para processar: {len(unprocessed_matches)}")
+        logger.info(f"📊 Jogos novos para processar: {len(unprocessed_matches)}")
 
         if not unprocessed_matches:
-            logger.info("Nenhum jogo novo para processar.")
+            logger.info("✅ Nenhum jogo novo para processar.")
             return
 
         total_valuable_bets = 0
 
         for match in unprocessed_matches:
             try:
+                # Verificar novamente se o evento já foi processado (double-check)
                 processed_ids = self.get_processed_event_ids()
                 if match["event_id"] in processed_ids:
-                    logger.info(f"Evento {match['event_id']} já processado, pulando...")
+                    logger.info(
+                        f"⏭️  Evento {match['event_id']} já processado, pulando..."
+                    )
                     continue
 
                 odds_df = self.get_match_odds(match["event_id"])
 
                 if odds_df.empty:
                     logger.info(
-                        f"Sem odds para {match['home_team']} vs {match['away_team']}"
+                        f"⚠️  Sem odds para {match['home_team']} vs {match['away_team']}"
                     )
                 else:
                     valuable_bets = self.analyze_bet_value(match, odds_df)
@@ -612,18 +572,20 @@ class BetProcessor:
                         saved_count = self.save_valuable_bets(valuable_bets)
                         total_valuable_bets += saved_count
                         logger.info(
-                            f"{saved_count} apostas salvas para evento {match['event_id']}"
+                            f"💾 {saved_count} apostas salvas para evento {match['event_id']}"
                         )
 
+                # Marcar como processado apenas se conseguir
                 if self.mark_event_as_processed(match["event_id"]):
-                    logger.info(f"Evento {match['event_id']} marcado como processado")
+                    logger.info(f"✓ Evento {match['event_id']} marcado como processado")
 
             except Exception as e:
-                logger.error(f"Erro ao processar evento {match['event_id']}: {e}")
+                logger.error(f"❌ Erro ao processar evento {match['event_id']}: {e}")
+                # Ainda marca como processado para evitar loops
                 self.mark_event_as_processed(match["event_id"])
 
         logger.info(
-            f"Processamento concluído. Total de apostas valiosas: {total_valuable_bets}"
+            f"✅ Processamento concluído. Total de apostas valiosas: {total_valuable_bets}"
         )
 
 

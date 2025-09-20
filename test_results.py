@@ -6,117 +6,106 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-def get_table_tennis_events():
-    """Coleta eventos de tênis de mesa para teste"""
+def search_specific_event(event_id):
+    """Busca um evento específico pela API"""
+    API_KEY = os.getenv("BETSAPI_API_KEY")
+    if not API_KEY:
+        print("API_KEY não encontrada!")
+        return None
+
+    # Primeiro tenta buscar resultado
+    url = "https://api.betsapi.com/v1/bet365/result"
+    params = {"token": API_KEY, "event_id": event_id}
+
+    try:
+        response = requests.get(url, params=params)
+        data = response.json()
+
+        print(f"\n=== RESULTADO EVENT_ID: {event_id} ===")
+        print(f"Success: {data.get('success')}")
+        print(f"Paging: {data.get('paging')}")
+
+        if data.get("success") == 1 and data.get("results"):
+            result = data["results"][0]
+            print(f"ID: {result.get('id')}")
+            print(f"Time Status: {result.get('time_status')}")
+            print(f"SS (Score): {result.get('ss')}")
+            print(f"Home: {result.get('home', {}).get('name')}")
+            print(f"Away: {result.get('away', {}).get('name')}")
+            print(f"Scores: {result.get('scores')}")
+            return result
+        else:
+            print(f"Nenhum resultado encontrado ou erro: {data}")
+            return None
+
+    except Exception as e:
+        print(f"Erro na requisição: {e}")
+        return None
+
+
+def search_event_info(event_id):
+    """Busca informações do evento (upcoming/inplay)"""
     API_KEY = os.getenv("BETSAPI_API_KEY")
     if not API_KEY:
         return None
 
-    LEAGUES = {
-        10048210: "Czech Liga Pro",
-        10068516: "Challenger Series TT",
-        10073432: "TT Cup",
-        10073465: "TT Elite Series",
-    }
+    # Tenta buscar como evento upcoming
+    url = "https://api.betsapi.com/v1/bet365/event"
+    params = {"token": API_KEY, "FI": event_id}
 
-    today = datetime.now().strftime("%Y%m%d")
-    events = {}
+    try:
+        response = requests.get(url, params=params)
+        data = response.json()
 
-    for league_id, league_name in LEAGUES.items():
-        url = "https://api.betsapi.com/v1/bet365/upcoming"
-        params = {
-            "token": API_KEY,
-            "sport_id": 92,
-            "league_id": league_id,
-            "day": today,
-        }
+        print(f"\n=== INFO EVENT_ID: {event_id} ===")
+        print(f"Success: {data.get('success')}")
 
-        try:
-            response = requests.get(url, params=params)
-            data = response.json()
+        if data.get("success") == 1 and data.get("results"):
+            result = data["results"][0]
+            print(f"ID: {result.get('id')}")
+            print(f"Time: {result.get('time')}")
+            print(f"Time Status: {result.get('time_status')}")
+            print(f"Home: {result.get('home', {}).get('name')}")
+            print(f"Away: {result.get('away', {}).get('name')}")
+            return result
+        else:
+            print(f"Evento não encontrado como upcoming: {data}")
+            return None
 
-            if data.get("success") == 1 and data.get("results"):
-                event = data["results"][0]
-                events[league_name] = {
-                    "id": event.get("id"),
-                    "home": event.get("home", {}).get("name"),
-                    "away": event.get("away", {}).get("name"),
-                    "time": datetime.fromtimestamp(int(event.get("time", 0))).strftime(
-                        "%Y-%m-%d %H:%M"
-                    )
-                    if event.get("time")
-                    else None,
-                    "time_status": event.get("time_status"),
-                }
-
-        except Exception:
-            continue
-
-    return events
-
-
-def get_table_tennis_results(events):
-    """Busca resultados completos dos eventos de tênis de mesa"""
-    API_KEY = os.getenv("BETSAPI_API_KEY")
-    if not API_KEY or not events:
+    except Exception as e:
+        print(f"Erro na requisição info: {e}")
         return None
 
-    results = {}
 
-    for league_name, event_data in events.items():
-        event_id = event_data["id"]
+def main():
+    """Busca todos os event_ids pendentes"""
+    pending_event_ids = [
+        181588970,  # Josef Medek vs Jan Zajicek
+        181585379,  # Daniel Murawski vs Damian Wasilewski
+        181588993,  # Josef Medek vs Michal Vavrecka
+        181585398,  # Grzegorz Adamiak vs Mateusz Golebiowski
+        181589029,  # Michal Regner vs Dan Volhejn
+        181589028,  # Frantisek Briza vs Kyryl Darin
+        181589040,  # Jiri Louda vs Martin Sychra
+        181589107,  # Jiri Plachy vs Daniel Tuma
+    ]
 
-        url = "https://api.betsapi.com/v1/bet365/result"
-        params = {"token": API_KEY, "event_id": event_id}
+    print(f"Buscando {len(pending_event_ids)} eventos específicos...")
 
-        try:
-            response = requests.get(url, params=params)
-            data = response.json()
-
-            if data.get("success") == 1 and data.get("results"):
-                result = data["results"][0]
-
-                results[league_name] = {
-                    "id": result.get("id"),
-                    "time": result.get("time"),
-                    "time_status": result.get("time_status"),
-                    "league": result.get("league", {}),
-                    "home": result.get("home", {}),
-                    "away": result.get("away", {}),
-                    "ss": result.get("ss"),
-                    "scores": result.get("scores", {}),
-                    "stats": result.get("stats", {}),
-                    "events": result.get("events", []),
-                    "extra": result.get("extra", {}),
-                    "timer": result.get("timer"),
-                    "periods": result.get("periods", []),
-                }
-
-        except Exception:
-            results[league_name] = {"error": "Falha na requisição"}
-
-    return results
-
-
-def display_results(results):
-    """Exibe a estrutura completa dos resultados"""
-    if not results:
-        print("Nenhum resultado encontrado")
-        return
-
-    for league_name, result in results.items():
+    for event_id in pending_event_ids:
         print(f"\n{'=' * 60}")
-        print(f"LIGA: {league_name}")
-        print(f"{'=' * 60}")
 
-        for key, value in result.items():
-            print(f"{key}: {value}")
+        # Primeiro busca resultado
+        result = search_specific_event(event_id)
+
+        # Se não encontrou resultado, busca info do evento
+        if result is None:
+            info = search_event_info(event_id)
+            if info is None:
+                print(f"Event ID {event_id} não encontrado em nenhuma endpoint!")
+
+        print(f"{'=' * 60}")
 
 
 if __name__ == "__main__":
-    events = get_table_tennis_events()
-    if events:
-        results = get_table_tennis_results(events)
-        display_results(results)
-    else:
-        print("Nenhum evento encontrado")
+    main()

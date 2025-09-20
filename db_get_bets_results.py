@@ -1,7 +1,12 @@
 import sqlite3
 import pandas as pd
+import requests
+import os
 from datetime import datetime
 import logging
+from dotenv import load_dotenv
+
+load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -15,146 +20,114 @@ class BetResultsChecker:
     ):
         self.bets_db_path = bets_db_path
         self.results_db_path = results_db_path
+        self.api_key = os.getenv("BETSAPI_API_KEY")
 
     def get_pending_bets(self):
         """Busca apostas que ainda não tem resultado"""
         conn = sqlite3.connect(self.bets_db_path)
-
         query = """
-        SELECT 
-            id,
-            event_id,
-            league_name,
-            home_team,
-            away_team,
-            event_time,
-            bet_type,
-            selection,
-            handicap,
-            odds
+        SELECT id, event_id, league_name, home_team, away_team,
+               event_time, bet_type, selection, handicap, odds
         FROM bets
         WHERE result IS NULL
+        ORDER BY event_time
         """
-
         df = pd.read_sql_query(query, conn)
         conn.close()
-
         return df
 
-    def get_match_result(self, home_team, away_team, event_time):
-        """Busca o resultado da partida no banco de resultados"""
-        conn = sqlite3.connect(self.results_db_path)
-
-        # Converter event_time para timestamp
-        if isinstance(event_time, str):
-            event_dt = pd.to_datetime(event_time)
-        else:
-            event_dt = event_time
-
-        # Buscar com margem de 2 horas antes e 4 horas depois do horário previsto
-        time_min = int((event_dt - pd.Timedelta(hours=2)).timestamp())
-        time_max = int((event_dt + pd.Timedelta(hours=4)).timestamp())
-
-        query = """
-        SELECT 
-            event_id,
-            home_name,
-            away_name,
-            score,
-            time_status
-        FROM events
-        WHERE home_name = ? 
-        AND away_name = ?
-        AND event_time BETWEEN ? AND ?
-        AND time_status = 3
-        """
-
-        df = pd.read_sql_query(
-            query, conn, params=(home_team, away_team, time_min, time_max)
-        )
-        conn.close()
-
-        if df.empty:
+    def get_result_from_api(self, event_id):
+        """Busca resultado diretamente da API"""
+        if not self.api_key:
+            logger.warning("API_KEY não encontrada")
             return None
 
-        return df.iloc[0]
+        url = "https://api.betsapi.com/v1/bet365/result"
+        params = {"token": self.api_key, "event_id": event_id}
 
-    def get_match_total_games(self, event_id):
-        """Calcula o total de games em uma partida"""
-        conn = sqlite3.connect(self.results_db_path)
+        try:
+            response = requests.get(url, params=params)
+            data = response.json()
 
-        query = """
-        SELECT 
-            set_number,
-            home_score,
-            away_score
-        FROM event_scores
-        WHERE event_id = ?
-        ORDER BY set_number
-        """
+            logger.info(
+                f"API Response - Success: {data.get('success')}, Results: {len(data.get('results', []))}"
+            )
 
-        df = pd.read_sql_query(query, conn, params=(event_id,))
-        conn.close()
+            if data.get("success") == 1 and data.get("results"):
+                result = data["results"][0]
+                time_status = result.get("time_status")
 
-        if df.empty:
+                if str(time_status) == "3":  # Finalizado (comparar como string)
+                    logger.info(
+                        f"✅ Resultado encontrado na API para event_id {event_id}"
+                    )
+                    return result
+                else:
+                    logger.info(
+                        f"🕐 Evento {event_id} ainda não finalizado (status: {time_status})"
+                    )
+                    return None
+            else:
+                logger.warning(f"❌ Evento {event_id} não encontrado na API: {data}")
+                return None
+
+        except Exception as e:
+            logger.error(f"Erro ao buscar na API: {e}")
+            return None
+
+    def calculate_total_games_from_api(self, api_result):
+        """Calcula total de games a partir do resultado da API"""
+        scores = api_result.get("scores", {})
+        if not scores:
             return None
 
         total_games = 0
-        for _, row in df.iterrows():
-            total_games += row["home_score"] + row["away_score"]
+        for set_num, set_score in scores.items():
+            home_score = int(set_score.get("home", 0))
+            away_score = int(set_score.get("away", 0))
+            total_games += home_score + away_score
 
+        logger.info(f"Total de games calculado: {total_games}")
         return total_games
 
-    def check_bet_result(self, bet, match_result):
-        """Verifica se a aposta foi ganha ou perdida e retorna o resultado real"""
-        if match_result is None:
-            return None, None, None
-
-        score = match_result["score"]
-        if not score or "-" not in score:
+    def check_bet_result_from_api(self, bet, api_result):
+        """Verifica resultado da aposta usando dados da API"""
+        ss_score = api_result.get("ss")
+        if not ss_score or "-" not in ss_score:
+            logger.warning(f"Score inválido na API: {ss_score}")
             return None, None, None
 
         try:
-            home_sets, away_sets = map(int, score.split("-"))
+            home_sets, away_sets = map(int, ss_score.split("-"))
         except ValueError:
+            logger.warning(f"Erro ao parsear score da API: {ss_score}")
             return None, None, None
 
         bet_type = bet["bet_type"]
         selection = bet["selection"]
         odds = bet["odds"]
-        home_team = bet["home_team"]
-        away_team = bet["away_team"]
 
-        # Para apostas To Win
         if bet_type == "To Win":
-            # Determinar o vencedor real
-            if home_sets > away_sets:
-                actual_winner = home_team
-            else:
-                actual_winner = away_team
-
             if selection == "Home":
                 won = home_sets > away_sets
+                actual_result = bet["home_team"] if won else bet["away_team"]
             elif selection == "Away":
                 won = away_sets > home_sets
+                actual_result = bet["away_team"] if won else bet["home_team"]
             else:
+                logger.warning(f"Selection inválida: {selection}")
                 return None, None, None
 
-            # Calcular lucro/prejuízo (considerando stake de 1 unidade)
-            if won:
-                profit = odds - 1  # Lucro = (odds - 1) * stake
-                result = 1
-            else:
-                profit = -1  # Perda = -stake
-                result = 0
+            result = 1 if won else 0
+            profit = (odds - 1) if won else -1
 
-            return result, profit, actual_winner
+            logger.info(
+                f"To Win: {selection} | Real: {home_sets}-{away_sets} | Won: {won}"
+            )
+            return result, profit, actual_result
 
-        # Para apostas Total
         elif bet_type == "Total":
-            # Buscar total de games
-            total_games = self.get_match_total_games(match_result["event_id"])
-
+            total_games = self.calculate_total_games_from_api(api_result)
             if total_games is None:
                 return None, None, None
 
@@ -165,100 +138,94 @@ class BetResultsChecker:
             elif "Under" in selection:
                 won = total_games < handicap
             else:
+                logger.warning(f"Selection inválida para Total: {selection}")
                 return None, None, None
 
-            # Calcular lucro/prejuízo
-            if won:
-                profit = odds - 1
-                result = 1
-            else:
-                profit = -1
-                result = 0
+            result = 1 if won else 0
+            profit = (odds - 1) if won else -1
+            actual_result = f"{total_games} games"
 
-            # O resultado real é o total de games
-            actual_result_value = str(total_games)
-
-            return result, profit, actual_result_value
+            logger.info(
+                f"Total: {selection} {handicap} | Real: {total_games} | Won: {won}"
+            )
+            return result, profit, actual_result
 
         return None, None, None
 
     def update_bet_result(self, bet_id, result, profit, actual_result=None):
-        """Atualiza o resultado da aposta no banco"""
+        """Atualiza resultado da aposta no banco"""
         conn = sqlite3.connect(self.bets_db_path)
         cursor = conn.cursor()
 
-        if actual_result is not None:
-            cursor.execute(
-                """
-            UPDATE bets
-            SET result = ?, profit = ?, actual_result = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-            """,
-                (result, profit, actual_result, bet_id),
-            )
-        else:
-            cursor.execute(
-                """
-            UPDATE bets
-            SET result = ?, profit = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-            """,
-                (result, profit, bet_id),
-            )
+        cursor.execute(
+            """
+        UPDATE bets
+        SET result = ?, profit = ?, actual_result = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+            (result, profit, actual_result, bet_id),
+        )
 
         conn.commit()
         conn.close()
 
     def process_results(self):
-        """Processa todos os resultados pendentes"""
-        logger.info("🔍 Buscando apostas pendentes de resultado...")
+        """Processa resultados usando a API"""
+        logger.info("🔍 Processando resultados via API...")
 
         pending_bets = self.get_pending_bets()
 
         if pending_bets.empty:
-            logger.info("✅ Nenhuma aposta pendente de resultado")
+            logger.info("✅ Nenhuma aposta pendente")
             return
 
-        logger.info(f"📊 Total de apostas pendentes: {len(pending_bets)}")
+        logger.info(f"📊 Total pendentes: {len(pending_bets)}")
 
         processed = 0
         wins = 0
         losses = 0
         total_profit = 0
+        not_found = 0
 
-        for _, bet in pending_bets.iterrows():
-            # Buscar resultado da partida
-            match_result = self.get_match_result(
-                bet["home_team"], bet["away_team"], bet["event_time"]
-            )
+        for i, bet in pending_bets.iterrows():
+            logger.info(f"\n--- {i + 1}/{len(pending_bets)} ---")
+            logger.info(f"ID: {bet['id']} | Event: {bet['event_id']}")
+            logger.info(f"{bet['home_team']} vs {bet['away_team']}")
+            logger.info(f"{bet['bet_type']} | {bet['selection']}")
 
-            if match_result is not None:
-                # Verificar resultado da aposta
-                result, profit, actual_result = self.check_bet_result(bet, match_result)
+            # Buscar resultado na API
+            api_result = self.get_result_from_api(bet["event_id"])
+
+            if api_result:
+                result, profit, actual_result = self.check_bet_result_from_api(
+                    bet, api_result
+                )
 
                 if result is not None:
-                    # Atualizar no banco
                     self.update_bet_result(bet["id"], result, profit, actual_result)
                     processed += 1
+                    total_profit += profit
 
                     if result == 1:
                         wins += 1
-                        logger.info(
-                            f"✅ GANHOU: {bet['home_team']} vs {bet['away_team']} - {bet['selection']} - Lucro: +{profit:.2f} - Resultado: {actual_result}"
-                        )
+                        logger.info(f"🟢 GANHOU | +{profit:.2f}u | {actual_result}")
                     else:
                         losses += 1
-                        logger.info(
-                            f"❌ PERDEU: {bet['home_team']} vs {bet['away_team']} - {bet['selection']} - Perda: {profit:.2f} - Resultado: {actual_result}"
-                        )
+                        logger.info(f"🔴 PERDEU | {profit:.2f}u | {actual_result}")
+                else:
+                    logger.warning("❓ Erro ao processar resultado")
+            else:
+                not_found += 1
+                logger.warning("❌ Resultado não disponível")
 
-                    total_profit += profit
+        self.show_summary(processed, wins, losses, total_profit, not_found)
 
-        # Resumo
+    def show_summary(self, processed, wins, losses, total_profit, not_found):
+        """Mostra resumo dos resultados"""
         logger.info(f"\n{'=' * 50}")
-        logger.info(f"📊 RESUMO DOS RESULTADOS")
+        logger.info(f"📊 RESUMO FINAL")
         logger.info(f"{'=' * 50}")
-        logger.info(f"Total processadas: {processed}")
+        logger.info(f"Processadas: {processed}")
         logger.info(
             f"Vitórias: {wins} ({wins / processed * 100:.1f}%)"
             if processed > 0
@@ -269,59 +236,13 @@ class BetResultsChecker:
             if processed > 0
             else "Derrotas: 0"
         )
-        logger.info(f"Lucro/Prejuízo Total: {total_profit:+.2f} unidades")
+        logger.info(f"Não encontradas: {not_found}")
+        logger.info(f"Lucro total: {total_profit:+.2f}u")
         logger.info(
-            f"ROI Real: {total_profit / processed * 100:+.1f}%"
+            f"ROI: {total_profit / processed * 100:+.1f}%"
             if processed > 0
-            else "ROI Real: 0%"
+            else "ROI: 0%"
         )
-        logger.info(f"{'=' * 50}")
-
-        # Estatísticas por liga
-        self.show_league_stats()
-
-    def show_league_stats(self):
-        """Mostra estatísticas por liga"""
-        conn = sqlite3.connect(self.bets_db_path)
-
-        query = """
-        SELECT 
-            league_name,
-            COUNT(*) as total_bets,
-            SUM(CASE WHEN result = 1 THEN 1 ELSE 0 END) as wins,
-            SUM(CASE WHEN result = 0 THEN 1 ELSE 0 END) as losses,
-            SUM(profit) as total_profit,
-            AVG(estimated_roi) as avg_estimated_roi
-        FROM bets
-        WHERE result IS NOT NULL
-        GROUP BY league_name
-        """
-
-        df = pd.read_sql_query(query, conn)
-        conn.close()
-
-        if not df.empty:
-            logger.info(f"\n📊 ESTATÍSTICAS POR LIGA:")
-            logger.info(f"{'=' * 50}")
-
-            for _, row in df.iterrows():
-                win_rate = (
-                    (row["wins"] / row["total_bets"] * 100)
-                    if row["total_bets"] > 0
-                    else 0
-                )
-                real_roi = (
-                    (row["total_profit"] / row["total_bets"] * 100)
-                    if row["total_bets"] > 0
-                    else 0
-                )
-
-                logger.info(f"\n{row['league_name']}")
-                logger.info(f"  • Total: {int(row['total_bets'])} apostas")
-                logger.info(f"  • Vitórias: {int(row['wins'])} ({win_rate:.1f}%)")
-                logger.info(f"  • Lucro: {row['total_profit']:+.2f} unidades")
-                logger.info(f"  • ROI Real: {real_roi:+.1f}%")
-                logger.info(f"  • ROI Estimado Médio: {row['avg_estimated_roi']:.1f}%")
 
 
 def main():

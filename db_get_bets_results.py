@@ -34,7 +34,6 @@ class BetResultsChecker:
             odds
         FROM bets
         WHERE result IS NULL
-        AND event_time < datetime('now')
         """
 
         df = pd.read_sql_query(query, conn)

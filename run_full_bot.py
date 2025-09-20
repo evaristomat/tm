@@ -181,7 +181,7 @@ def main():
         },
         {
             "file": "monitor.py",
-            "description": "Monitorar e atualizar partidas ao vivo",
+            "description": "Pega as odds",
             "required": True,
         },
         {

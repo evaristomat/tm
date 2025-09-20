@@ -3,9 +3,11 @@ import asyncio
 import sqlite3
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set, Tuple
 import os
 from dotenv import load_dotenv
+import json
+from contextlib import asynccontextmanager
 
 # Suprimir logs do httpx
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -65,15 +67,36 @@ class RateLimitError(Exception):
     pass
 
 
+class DatabaseError(Exception):
+    pass
+
+
 class Bet365Client:
     def __init__(self):
         self.base_url = os.getenv("BASE_URL", "https://api.betsapi.com/v1")
         self.base_url_v3 = os.getenv("BASE_URL_V3", "https://api.b365api.com/v3")
-        self.api_key = os.getenv("BETSAPI_API_KEY")
+        # Tentar múltiplas variáveis de ambiente
+        self.api_key = (
+            os.getenv("API_KEY")
+            or os.getenv("BETSAPI_API_KEY")
+            or os.getenv("BETS_API_KEY")
+        )
         self.request_timeout = int(os.getenv("REQUEST_TIMEOUT", "30"))
+        self.max_concurrent_requests = int(os.getenv("MAX_CONCURRENT_REQUESTS", "10"))
+        self.retry_attempts = int(os.getenv("RETRY_ATTEMPTS", "3"))
+        self.retry_delay = float(os.getenv("RETRY_DELAY", "1.0"))
         self.client = httpx.AsyncClient(timeout=self.request_timeout)
-        self.semaphore = asyncio.Semaphore(10)
+        self.semaphore = asyncio.Semaphore(self.max_concurrent_requests)
         self.requests_count = 0
+
+        if not self.api_key:
+            logger.error("API Key não encontrada! Variáveis disponíveis:")
+            for key in os.environ.keys():
+                if "API" in key.upper() or "KEY" in key.upper():
+                    logger.error(f"  - {key}")
+            raise BetsAPIError("API Key não configurada")
+        else:
+            logger.info(f"API Key carregada: {self.api_key[:10]}...")
 
     async def _make_request(
         self, endpoint: str, params: dict = None, version: str = "v1"
@@ -83,27 +106,37 @@ class Bet365Client:
 
         params["token"] = self.api_key
 
-        try:
-            base_url = self.base_url if version == "v1" else self.base_url_v3
-            url = f"{base_url}/{endpoint}"
+        base_url = self.base_url if version == "v1" else self.base_url_v3
+        url = f"{base_url}/{endpoint}"
 
-            async with self.semaphore:
-                self.requests_count += 1
-                response = await self.client.get(url, params=params)
-                response.raise_for_status()
+        for attempt in range(self.retry_attempts):
+            try:
+                async with self.semaphore:
+                    self.requests_count += 1
+                    response = await self.client.get(url, params=params)
+                    response.raise_for_status()
 
-                data = response.json()
+                    data = response.json()
 
-                if data.get("success") == 0:
-                    error_msg = data.get("error", "Unknown error")
-                    if "rate limit" in error_msg.lower():
-                        raise RateLimitError(error_msg)
-                    raise BetsAPIError(error_msg)
+                    if data.get("success") == 0:
+                        error_msg = data.get("error", "Unknown error")
+                        if "rate limit" in error_msg.lower():
+                            raise RateLimitError(error_msg)
+                        raise BetsAPIError(error_msg)
 
-                return data
+                    return data
 
-        except httpx.HTTPError as e:
-            raise BetsAPIError(f"HTTP error: {str(e)}")
+            except (httpx.HTTPError, RateLimitError) as e:
+                if attempt == self.retry_attempts - 1:
+                    raise BetsAPIError(
+                        f"Request failed after {self.retry_attempts} attempts: {str(e)}"
+                    )
+
+                wait_time = self.retry_delay * (2**attempt)  # Exponential backoff
+                logger.warning(
+                    f"Attempt {attempt + 1} failed. Retrying in {wait_time}s: {str(e)}"
+                )
+                await asyncio.sleep(wait_time)
 
     async def upcoming(
         self,
@@ -131,36 +164,22 @@ class Bet365Client:
         await self.client.aclose()
 
 
-class SimplifiedDatabase:
+class DatabaseManager:
     def __init__(self, db_name: str = "tm_data.db"):
         self.db_name = db_name
-        self.new_events_count = 0
-        self.existing_events_count = 0
-        self.new_odds_count = 0
-        self.existing_odds_count = 0
+        self.conn = None
+        self.cache_existing_events: Set[str] = set()
+        self.cache_events_with_odds: Set[str] = set()
         self.init_database()
+        self.load_event_cache()
 
     def init_database(self):
-        """Inicializa o banco de dados com tabelas simplificadas"""
+        """Inicializa o banco de dados com tabelas otimizadas"""
         try:
-            conn = sqlite3.connect(self.db_name)
-            cursor = conn.cursor()
+            self.conn = sqlite3.connect(self.db_name)
+            cursor = self.conn.cursor()
 
-            # Verificar se a tabela events existe e contar registros
-            cursor.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='events'"
-            )
-            events_table_exists = cursor.fetchone()
-
-            if events_table_exists:
-                cursor.execute("SELECT COUNT(*) FROM events")
-                total_events = cursor.fetchone()[0]
-                logger.info(
-                    f"Banco de dados conectado. Total de eventos: {total_events}"
-                )
-            else:
-                logger.info("Criando novo banco de dados...")
-
+            # Criar tabelas se não existirem
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS events (
                     id TEXT PRIMARY KEY,
@@ -204,135 +223,215 @@ class SimplifiedDatabase:
                 )
             """)
 
-            conn.commit()
-            conn.close()
+            # Criar índices para melhorar performance
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_events_time ON events(time)")
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_events_league ON events(league_id)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_events_odds_processed ON events(odds_processed)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_match_odds_event ON match_odds(event_id)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_first_game_odds_event ON first_game_odds(event_id)"
+            )
+
+            self.conn.commit()
+            logger.info("Banco de dados inicializado com sucesso")
 
         except Exception as e:
             logger.error(f"Erro ao inicializar banco de dados: {e}")
+            raise DatabaseError(f"Falha na inicialização do banco: {e}")
 
-    def get_stats(self):
-        """Retorna estatísticas da sessão atual"""
-        return {
-            "new_events": self.new_events_count,
-            "existing_events": self.existing_events_count,
-            "new_odds": self.new_odds_count,
-            "existing_odds": self.existing_odds_count,
-        }
+    def load_event_cache(self):
+        """Carrega cache de eventos existentes para evitar consultas repetidas ao banco"""
+        try:
+            cursor = self.conn.cursor()
+
+            # Carregar todos os IDs de eventos
+            cursor.execute("SELECT id FROM events")
+            self.cache_existing_events = {row[0] for row in cursor.fetchall()}
+
+            # Carregar IDs de eventos com odds processadas
+            cursor.execute("SELECT id FROM events WHERE odds_processed = 1")
+            self.cache_events_with_odds = {row[0] for row in cursor.fetchall()}
+
+            logger.info(
+                f"Cache carregado: {len(self.cache_existing_events)} eventos, {len(self.cache_events_with_odds)} com odds"
+            )
+
+        except Exception as e:
+            logger.error(f"Erro ao carregar cache: {e}")
 
     def event_exists(self, event_id: str) -> bool:
-        """Verifica se um evento já existe no banco de dados"""
-        try:
-            conn = sqlite3.connect(self.db_name)
-            cursor = conn.cursor()
-
-            cursor.execute("SELECT id FROM events WHERE id = ?", (event_id,))
-            result = cursor.fetchone()
-
-            conn.close()
-            return result is not None
-
-        except Exception as e:
-            logger.error(f"Erro ao verificar evento: {e}")
-            return False
+        """Verifica se um evento já existe usando cache"""
+        return event_id in self.cache_existing_events
 
     def event_has_odds(self, event_id: str) -> bool:
-        """Verifica se um evento já tem odds processadas"""
+        """Verifica se um evento já tem odds processadas usando cache"""
+        return event_id in self.cache_events_with_odds
+
+    def find_similar_event(
+        self, event: dict, time_threshold_hours: int = 6
+    ) -> Optional[str]:
+        """Procura por evento similar (mesmo confronto em período próximo)"""
         try:
-            conn = sqlite3.connect(self.db_name)
-            cursor = conn.cursor()
+            home_team = event.get("home", {}).get("name", "")
+            away_team = event.get("away", {}).get("name", "")
+            league_id = event.get("league_id")
 
-            cursor.execute(
-                "SELECT odds_processed FROM events WHERE id = ?", (event_id,)
-            )
-            result = cursor.fetchone()
+            # Converter event_time para inteiro se necessário
+            event_time = event.get("time", 0)
+            if isinstance(event_time, str):
+                try:
+                    event_time = int(event_time)
+                except (ValueError, TypeError):
+                    event_time = 0
 
-            conn.close()
-            return result and result[0] == 1
+            time_start = event_time - (time_threshold_hours * 3600)
+            time_end = event_time + (time_threshold_hours * 3600)
 
-        except Exception as e:
-            logger.error(f"Erro ao verificar odds: {e}")
-            return False
-
-    def save_event(self, event: dict) -> bool:
-        """Salva um evento no banco de dados, retorna True se foi inserido novo"""
-        try:
-            conn = sqlite3.connect(self.db_name)
-            cursor = conn.cursor()
-
-            cursor.execute("SELECT id FROM events WHERE id = ?", (event.get("id"),))
-            existing_event = cursor.fetchone()
-
-            if existing_event:
-                cursor.execute(
-                    """
-                    UPDATE events 
-                    SET time = ?, time_status = ?, league_id = ?, league_name = ?, 
-                        home_team = ?, away_team = ?, updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                """,
-                    (
-                        event.get("time", 0),
-                        event.get("time_status", 0),
-                        event.get("league_id"),
-                        event.get("league_name", ""),
-                        event.get("home", {}).get("name", ""),
-                        event.get("away", {}).get("name", ""),
-                        event.get("id"),
-                    ),
-                )
-                conn.commit()
-                self.existing_events_count += 1
-                logger.debug(f"Evento atualizado: {event.get('id')}")
-                return False
-            else:
-                cursor.execute(
-                    """
-                    INSERT INTO events 
-                    (id, time, time_status, league_id, league_name, home_team, away_team)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                    (
-                        event.get("id"),
-                        event.get("time", 0),
-                        event.get("time_status", 0),
-                        event.get("league_id"),
-                        event.get("league_name", ""),
-                        event.get("home", {}).get("name", ""),
-                        event.get("away", {}).get("name", ""),
-                    ),
-                )
-                conn.commit()
-                self.new_events_count += 1
-                logger.info(
-                    f"Novo evento: {event.get('home', {}).get('name', '')} vs {event.get('away', {}).get('name', '')}"
-                )
-                return True
-
-        except Exception as e:
-            logger.error(f"Erro ao salvar evento: {e}")
-            return False
-        finally:
-            conn.close()
-
-    def mark_event_processed(self, event_id: str):
-        """Marca um evento como tendo odds processadas"""
-        try:
-            conn = sqlite3.connect(self.db_name)
-            cursor = conn.cursor()
-
+            cursor = self.conn.cursor()
             cursor.execute(
                 """
+                SELECT id FROM events 
+                WHERE league_id = ? 
+                AND home_team = ? 
+                AND away_team = ? 
+                AND time BETWEEN ? AND ?
+                AND id != ?
+                LIMIT 1
+            """,
+                (
+                    league_id,
+                    home_team,
+                    away_team,
+                    time_start,
+                    time_end,
+                    event.get("id"),
+                ),
+            )
+
+            result = cursor.fetchone()
+            return result[0] if result else None
+
+        except Exception as e:
+            logger.error(f"Erro ao buscar evento similar: {e}")
+            return None
+
+    def save_events_batch(self, events: List[dict]) -> Tuple[int, int]:
+        """Salva múltiplos eventos em lote, retorna (novos, atualizados)"""
+        if not events:
+            return 0, 0
+
+        new_count = 0
+        updated_count = 0
+
+        try:
+            cursor = self.conn.cursor()
+
+            for event in events:
+                event_id = event.get("id")
+                if not event_id:
+                    continue
+
+                # Converter event_time para inteiro se necessário
+                event_time = event.get("time", 0)
+                if isinstance(event_time, str):
+                    try:
+                        event_time = int(event_time)
+                    except (ValueError, TypeError):
+                        event_time = 0
+
+                # Verificar se já existe
+                if event_id in self.cache_existing_events:
+                    # Atualizar evento existente
+                    cursor.execute(
+                        """
+                        UPDATE events 
+                        SET time = ?, time_status = ?, league_id = ?, league_name = ?, 
+                            home_team = ?, away_team = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    """,
+                        (
+                            event_time,
+                            event.get("time_status", 0),
+                            event.get("league_id"),
+                            event.get("league_name", ""),
+                            event.get("home", {}).get("name", ""),
+                            event.get("away", {}).get("name", ""),
+                            event_id,
+                        ),
+                    )
+                    updated_count += 1
+                    logger.debug(f"Evento atualizado: {event_id}")
+                else:
+                    # Verificar se é duplicata por confronto e horário
+                    similar_event_id = self.find_similar_event(event)
+                    if similar_event_id:
+                        logger.warning(
+                            f"Evento duplicado ignorado: {event.get('home', {}).get('name', '')} vs {event.get('away', {}).get('name', '')} (similar to {similar_event_id})"
+                        )
+                        continue
+
+                    # Inserir novo evento
+                    cursor.execute(
+                        """
+                        INSERT INTO events 
+                        (id, time, time_status, league_id, league_name, home_team, away_team)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                        (
+                            event_id,
+                            event_time,
+                            event.get("time_status", 0),
+                            event.get("league_id"),
+                            event.get("league_name", ""),
+                            event.get("home", {}).get("name", ""),
+                            event.get("away", {}).get("name", ""),
+                        ),
+                    )
+                    self.cache_existing_events.add(event_id)
+                    new_count += 1
+                    logger.info(
+                        f"Novo evento: {event.get('home', {}).get('name', '')} vs {event.get('away', {}).get('name', '')}"
+                    )
+
+            self.conn.commit()
+            return new_count, updated_count
+
+        except Exception as e:
+            self.conn.rollback()
+            logger.error(f"Erro ao salvar eventos em lote: {e}")
+            return new_count, updated_count
+
+    def mark_events_processed(self, event_ids: List[str]):
+        """Marca múltiplos eventos como tendo odds processadas"""
+        if not event_ids:
+            return
+
+        try:
+            cursor = self.conn.cursor()
+            placeholders = ",".join(["?"] * len(event_ids))
+
+            cursor.execute(
+                f"""
                 UPDATE events 
                 SET odds_processed = 1, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
+                WHERE id IN ({placeholders})
             """,
-                (event_id,),
+                event_ids,
             )
-            conn.commit()
+
+            # Atualizar cache
+            for event_id in event_ids:
+                self.cache_events_with_odds.add(event_id)
+
+            self.conn.commit()
         except Exception as e:
-            logger.error(f"Erro ao marcar evento: {e}")
-        finally:
-            conn.close()
+            logger.error(f"Erro ao marcar eventos como processados: {e}")
 
     def extract_important_odds(self, odds_data: dict) -> dict:
         """Extrai apenas as odds importantes da resposta da API"""
@@ -365,202 +464,164 @@ class SimplifiedDatabase:
 
         return important_odds
 
-    def save_important_odds(self, event_id: str, odds_data: dict) -> bool:
-        """Salva apenas as odds importantes no banco de dados, retorna True se salvou novas odds"""
-        conn = sqlite3.connect(self.db_name)
-        cursor = conn.cursor()
+    def save_odds_batch(self, event_odds: List[Tuple[str, dict]]) -> int:
+        """Salva múltiplas odds em lote, retorna o número de novas odds salvas"""
+        if not event_odds:
+            return 0
+
+        new_odds_count = 0
+        processed_events = []
 
         try:
-            important_odds = self.extract_important_odds(odds_data)
-            odds_saved = False
+            cursor = self.conn.cursor()
+            current_timestamp = datetime.now().timestamp()
 
-            # Processar odds da partida (match_lines)
-            for outcome in important_odds["match_lines"].get("odds", []):
-                if outcome.get("name") == "To Win":
-                    selection = "Home" if outcome.get("header") == "1" else "Away"
-                    try:
-                        cursor.execute(
-                            """
-                            INSERT OR IGNORE INTO match_odds 
-                            (event_id, market_type, selection, odds, handicap_value, updated_at)
-                            VALUES (?, ?, ?, ?, ?, ?)
-                        """,
+            for event_id, odds_data in event_odds:
+                important_odds = self.extract_important_odds(odds_data)
+                odds_to_insert = []
+
+                # Processar odds da partida (match_lines)
+                for outcome in important_odds["match_lines"].get("odds", []):
+                    if outcome.get("name") == "To Win":
+                        selection = "Home" if outcome.get("header") == "1" else "Away"
+                        odds_to_insert.append(
                             (
                                 event_id,
                                 "To Win",
                                 selection,
                                 float(outcome.get("odds", 0)),
                                 "",
-                                datetime.now().timestamp(),
-                            ),
+                                current_timestamp,
+                                "match_odds",
+                            )
                         )
-                        if cursor.rowcount > 0:
-                            odds_saved = True
-                            self.new_odds_count += 1
-                        else:
-                            self.existing_odds_count += 1
-                    except sqlite3.IntegrityError:
-                        self.existing_odds_count += 1
-                        pass
 
-                elif outcome.get("name") == "Total":
-                    selection = "Over" if outcome.get("header") == "1" else "Under"
-                    try:
-                        cursor.execute(
-                            """
-                            INSERT OR IGNORE INTO match_odds 
-                            (event_id, market_type, selection, odds, handicap_value, updated_at)
-                            VALUES (?, ?, ?, ?, ?, ?)
-                        """,
+                    elif outcome.get("name") == "Total":
+                        selection = "Over" if outcome.get("header") == "1" else "Under"
+                        odds_to_insert.append(
                             (
                                 event_id,
                                 "Total",
                                 f"{selection} {outcome.get('handicap', '')}",
                                 float(outcome.get("odds", 0)),
                                 outcome.get("handicap", ""),
-                                datetime.now().timestamp(),
-                            ),
+                                current_timestamp,
+                                "match_odds",
+                            )
                         )
-                        if cursor.rowcount > 0:
-                            odds_saved = True
-                            self.new_odds_count += 1
-                        else:
-                            self.existing_odds_count += 1
-                    except sqlite3.IntegrityError:
-                        self.existing_odds_count += 1
-                        pass
 
-                elif outcome.get("name") == "Handicap":
-                    selection = "Home" if outcome.get("header") == "1" else "Away"
-                    try:
-                        cursor.execute(
-                            """
-                            INSERT OR IGNORE INTO match_odds 
-                            (event_id, market_type, selection, odds, handicap_value, updated_at)
-                            VALUES (?, ?, ?, ?, ?, ?)
-                        """,
+                    elif outcome.get("name") == "Handicap":
+                        selection = "Home" if outcome.get("header") == "1" else "Away"
+                        odds_to_insert.append(
                             (
                                 event_id,
                                 "Handicap",
                                 selection,
                                 float(outcome.get("odds", 0)),
                                 outcome.get("handicap", ""),
-                                datetime.now().timestamp(),
-                            ),
+                                current_timestamp,
+                                "match_odds",
+                            )
                         )
-                        if cursor.rowcount > 0:
-                            odds_saved = True
-                            self.new_odds_count += 1
-                        else:
-                            self.existing_odds_count += 1
-                    except sqlite3.IntegrityError:
-                        self.existing_odds_count += 1
-                        pass
 
-            # Processar odds do primeiro game (1st_game)
-            for outcome in important_odds["1st_game"].get("odds", []):
-                if outcome.get("name") == "To Win":
-                    selection = "Home" if outcome.get("header") == "1" else "Away"
-                    try:
-                        cursor.execute(
-                            """
-                            INSERT OR IGNORE INTO first_game_odds 
-                            (event_id, market_type, selection, odds, handicap_value, updated_at)
-                            VALUES (?, ?, ?, ?, ?, ?)
-                        """,
+                # Processar odds do primeiro game (1st_game)
+                for outcome in important_odds["1st_game"].get("odds", []):
+                    if outcome.get("name") == "To Win":
+                        selection = "Home" if outcome.get("header") == "1" else "Away"
+                        odds_to_insert.append(
                             (
                                 event_id,
                                 "To Win",
                                 selection,
                                 float(outcome.get("odds", 0)),
                                 "",
-                                datetime.now().timestamp(),
-                            ),
+                                current_timestamp,
+                                "first_game_odds",
+                            )
                         )
-                        if cursor.rowcount > 0:
-                            odds_saved = True
-                            self.new_odds_count += 1
-                        else:
-                            self.existing_odds_count += 1
-                    except sqlite3.IntegrityError:
-                        self.existing_odds_count += 1
-                        pass
 
-                elif outcome.get("name") == "Total":
-                    selection = "Over" if outcome.get("header") == "1" else "Under"
-                    try:
-                        cursor.execute(
-                            """
-                            INSERT OR IGNORE INTO first_game_odds 
-                            (event_id, market_type, selection, odds, handicap_value, updated_at)
-                            VALUES (?, ?, ?, ?, ?, ?)
-                        """,
+                    elif outcome.get("name") == "Total":
+                        selection = "Over" if outcome.get("header") == "1" else "Under"
+                        odds_to_insert.append(
                             (
                                 event_id,
                                 "Total",
                                 f"{selection} {outcome.get('handicap', '')}",
                                 float(outcome.get("odds", 0)),
                                 outcome.get("handicap", ""),
-                                datetime.now().timestamp(),
-                            ),
+                                current_timestamp,
+                                "first_game_odds",
+                            )
                         )
-                        if cursor.rowcount > 0:
-                            odds_saved = True
-                            self.new_odds_count += 1
-                        else:
-                            self.existing_odds_count += 1
-                    except sqlite3.IntegrityError:
-                        self.existing_odds_count += 1
-                        pass
 
-                elif outcome.get("name") == "Handicap":
-                    selection = "Home" if outcome.get("header") == "1" else "Away"
-                    try:
-                        cursor.execute(
-                            """
-                            INSERT OR IGNORE INTO first_game_odds 
-                            (event_id, market_type, selection, odds, handicap_value, updated_at)
-                            VALUES (?, ?, ?, ?, ?, ?)
-                        """,
+                    elif outcome.get("name") == "Handicap":
+                        selection = "Home" if outcome.get("header") == "1" else "Away"
+                        odds_to_insert.append(
                             (
                                 event_id,
                                 "Handicap",
                                 selection,
                                 float(outcome.get("odds", 0)),
                                 outcome.get("handicap", ""),
-                                datetime.now().timestamp(),
-                            ),
+                                current_timestamp,
+                                "first_game_odds",
+                            )
                         )
-                        if cursor.rowcount > 0:
-                            odds_saved = True
-                            self.new_odds_count += 1
-                        else:
-                            self.existing_odds_count += 1
-                    except sqlite3.IntegrityError:
-                        self.existing_odds_count += 1
-                        pass
 
-            conn.commit()
+                # Inserir odds em lote por tipo de tabela
+                match_odds = [o for o in odds_to_insert if o[6] == "match_odds"]
+                first_game_odds = [
+                    o for o in odds_to_insert if o[6] == "first_game_odds"
+                ]
 
-            if odds_saved:
-                self.mark_event_processed(event_id)
-                logger.info(f"Odds salvas para: {event_id}")
-            else:
-                logger.debug(f"Odds já existiam para: {event_id}")
+                if match_odds:
+                    cursor.executemany(
+                        """
+                        INSERT OR IGNORE INTO match_odds 
+                        (event_id, market_type, selection, odds, handicap_value, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        [(o[0], o[1], o[2], o[3], o[4], o[5]) for o in match_odds],
+                    )
+                    new_odds_count += cursor.rowcount
 
-            return odds_saved
+                if first_game_odds:
+                    cursor.executemany(
+                        """
+                        INSERT OR IGNORE INTO first_game_odds 
+                        (event_id, market_type, selection, odds, handicap_value, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        [(o[0], o[1], o[2], o[3], o[4], o[5]) for o in first_game_odds],
+                    )
+                    new_odds_count += cursor.rowcount
+
+                if odds_to_insert:
+                    processed_events.append(event_id)
+
+            # Marcar eventos como processados
+            if processed_events:
+                self.mark_events_processed(processed_events)
+                logger.info(f"Odds salvas para {len(processed_events)} eventos")
+
+            self.conn.commit()
+            return new_odds_count
 
         except Exception as e:
-            logger.error(f"Erro ao salvar odds: {e}")
-            return False
-        finally:
-            conn.close()
+            self.conn.rollback()
+            logger.error(f"Erro ao salvar odds em lote: {e}")
+            return new_odds_count
+
+    def close(self):
+        """Fecha a conexão com o banco de dados"""
+        if self.conn:
+            self.conn.close()
 
 
 class TableTennisMonitor:
     def __init__(self):
         self.client = Bet365Client()
-        self.db = SimplifiedDatabase()
+        self.db = DatabaseManager()
         self.sport_id = 92
         self.leagues = {
             10048210: "Czech Liga Pro",
@@ -583,8 +644,10 @@ class TableTennisMonitor:
                 for i in range(days_ahead):
                     day = (datetime.now() + timedelta(days=i)).strftime("%Y%m%d")
                     page = 1
+                    has_more_pages = True
+                    day_events = 0
 
-                    while True:
+                    while has_more_pages:
                         response = await self.client.upcoming(
                             sport_id=self.sport_id,
                             league_id=league_id,
@@ -593,22 +656,29 @@ class TableTennisMonitor:
                         )
 
                         if not response.get("success", 1) or "results" not in response:
+                            logger.debug(f"  → Sem resultados para {day} página {page}")
                             break
 
                         results = response["results"]
                         if not results:
+                            logger.debug(
+                                f"  → Resultados vazios para {day} página {page}"
+                            )
                             break
 
                         new_events = []
                         for event in results:
                             event_id = event.get("id")
 
-                            if event_id in seen_event_ids:
-                                continue
-
-                            if self.db.event_exists(
-                                event_id
-                            ) and self.db.event_has_odds(event_id):
+                            # Pular eventos já vistos ou processados
+                            if (
+                                event_id in seen_event_ids
+                                or event_id in self.processed_events
+                                or (
+                                    self.db.event_exists(event_id)
+                                    and self.db.event_has_odds(event_id)
+                                )
+                            ):
                                 continue
 
                             event["league_name"] = league_name
@@ -616,15 +686,19 @@ class TableTennisMonitor:
                             new_events.append(event)
                             seen_event_ids.add(event_id)
                             league_events += 1
+                            day_events += 1
 
                         all_matches.extend(new_events)
 
                         pager = response.get("pager", {})
-                        if page >= pager.get("total", 1):
-                            break
+                        if page >= pager.get("total", 1) or not results:
+                            has_more_pages = False
+                        else:
+                            page += 1
+                            await asyncio.sleep(0.1)  # Reduzido para melhor performance
 
-                        page += 1
-                        await asyncio.sleep(0.3)
+                    if day_events > 0:
+                        logger.info(f"  → Dia {day}: {day_events} eventos")
 
             except Exception as e:
                 logger.error(f"Erro na liga {league_name}: {e}")
@@ -633,11 +707,38 @@ class TableTennisMonitor:
             if league_events > 0:
                 logger.info(f"  → {league_events} eventos encontrados em {league_name}")
             else:
-                logger.debug(f"  → Nenhum novo evento em {league_name}")
+                logger.info(f"  → Nenhum evento novo em {league_name}")
 
         return all_matches
 
-    async def get_prematch_odds(self, event_id: str) -> Optional[Dict]:
+    async def get_prematch_odds_batch(
+        self, event_ids: List[str]
+    ) -> List[Tuple[str, Optional[Dict]]]:
+        """Busca as odds prematch para múltiplos eventos de forma concorrente"""
+        if not event_ids:
+            return []
+
+        results = []
+        tasks = []
+
+        for event_id in event_ids:
+            tasks.append(self._get_single_prematch_odds(event_id))
+
+        # Executar tarefas em lote com semáforo controlado pelo cliente
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Processar resultados
+        processed_results = []
+        for event_id, result in zip(event_ids, results):
+            if isinstance(result, Exception):
+                logger.error(f"Erro ao buscar odds para {event_id}: {result}")
+                processed_results.append((event_id, None))
+            else:
+                processed_results.append((event_id, result))
+
+        return processed_results
+
+    async def _get_single_prematch_odds(self, event_id: str) -> Optional[Dict]:
         """Busca as odds prematch para um evento específico"""
         try:
             response = await self.client.prematch(FI=event_id)
@@ -649,36 +750,59 @@ class TableTennisMonitor:
                 return None
 
         except Exception as e:
-            logger.error(f"Erro ao buscar odds: {e}")
+            logger.error(f"Erro ao buscar odds para {event_id}: {e}")
             return None
 
-    async def process_event(self, match: Dict):
-        """Processa um único evento (salva evento e busca odds)"""
-        event_id = match["id"]
-
-        if event_id in self.processed_events:
+    async def process_events_batch(self, matches: List[Dict]):
+        """Processa múltiplos eventos em lote (salva eventos e busca odds)"""
+        if not matches:
             return
 
-        try:
-            is_new_event = self.db.save_event(match)
+        # Filtrar eventos já processados
+        new_matches = [
+            match
+            for match in matches
+            if match["id"] not in self.processed_events
+            and not (
+                self.db.event_exists(match["id"])
+                and self.db.event_has_odds(match["id"])
+            )
+        ]
 
-            if not is_new_event and self.db.event_has_odds(event_id):
-                logger.debug(f"Evento já processado: {event_id}")
-                self.processed_events.add(event_id)
-                return
+        if not new_matches:
+            logger.info("Nenhum evento novo para processar")
+            return
 
-            odds_data = await self.get_prematch_odds(event_id)
-            if odds_data:
-                odds_saved = self.db.save_important_odds(event_id, odds_data)
-                if not odds_saved:
-                    logger.debug(f"Odds já existiam para: {event_id}")
+        # Salvar eventos em lote
+        new_count, updated_count = self.db.save_events_batch(new_matches)
+        logger.info(f"Eventos salvos: {new_count} novos, {updated_count} atualizados")
+
+        # Buscar odds apenas para eventos novos (não existentes ou sem odds)
+        events_needing_odds = [
+            match["id"]
+            for match in new_matches
+            if not self.db.event_has_odds(match["id"])
+        ]
+
+        if events_needing_odds:
+            logger.info(f"Buscando odds para {len(events_needing_odds)} eventos")
+            odds_results = await self.get_prematch_odds_batch(events_needing_odds)
+
+            # Filtrar resultados válidos
+            valid_odds = [
+                (event_id, odds) for event_id, odds in odds_results if odds is not None
+            ]
+
+            if valid_odds:
+                # Salvar odds em lote
+                new_odds_count = self.db.save_odds_batch(valid_odds)
+                logger.info(f"Salvas {new_odds_count} novas odds")
             else:
-                logger.warning(f"Sem odds disponíveis para: {event_id}")
+                logger.warning("Nenhuma odds válida encontrada")
 
-            self.processed_events.add(event_id)
-
-        except Exception as e:
-            logger.error(f"Erro no evento {event_id}: {e}")
+        # Adicionar eventos processados ao conjunto
+        for match in new_matches:
+            self.processed_events.add(match["id"])
 
     async def monitor_and_save_odds(self, days_ahead: int = 7):
         """Monitora jogos upcoming e salva suas odds no banco de dados"""
@@ -692,36 +816,36 @@ class TableTennisMonitor:
             logger.info("✅ Nenhuma partida nova encontrada")
             return
 
-        logger.info(f"🎯 {len(matches)} partidas novas para processar")
+        logger.info(f"🎯 {len(matches)} partidas para processar")
 
-        # Processar eventos
-        tasks = [self.process_event(match) for match in matches]
-        await asyncio.gather(*tasks)
+        # Processar eventos em lote
+        await self.process_events_batch(matches)
 
-        # Exibir estatísticas
-        stats = self.db.get_stats()
-        logger.info("📈 Estatísticas da sessão:")
-        logger.info(f"   → Novos eventos: {stats['new_events']}")
-        logger.info(f"   → Eventos existentes: {stats['existing_events']}")
-        logger.info(f"   → Novas odds: {stats['new_odds']}")
-        logger.info(f"   → Odds existentes: {stats['existing_odds']}")
-        logger.info(f"   → Requisições API: {self.client.requests_count}")
-
-        logger.info("✅ Monitoramento concluído com sucesso")
+        logger.info(
+            f"✅ Monitoramento concluído. Requisições API: {self.client.requests_count}"
+        )
 
     async def close(self):
         await self.client.close()
+        self.db.close()
+
+
+@asynccontextmanager
+async def monitor_context():
+    """Context manager para gerenciar recursos do monitor"""
+    monitor = TableTennisMonitor()
+    try:
+        yield monitor
+    finally:
+        await monitor.close()
 
 
 async def main():
-    monitor = TableTennisMonitor()
-
-    try:
-        await monitor.monitor_and_save_odds(days_ahead=3)
-    except Exception as e:
-        logger.error(f"Erro no monitoramento: {e}")
-    finally:
-        await monitor.close()
+    async with monitor_context() as monitor:
+        try:
+            await monitor.monitor_and_save_odds(days_ahead=3)
+        except Exception as e:
+            logger.error(f"Erro no monitoramento: {e}")
 
 
 if __name__ == "__main__":

@@ -422,7 +422,17 @@ class BetProcessor:
                         adjusted_prob, odds_value
                     )
 
+                    # Detailed logging for each bet analysis
+                    log_message = (
+                        f"To Win - Home: {home_player} vs {away_player} | "
+                        f"Odds: {odds_value:.2f} | "
+                        f"Base Prob: {base_prob:.3f} | "
+                        f"Adj Prob: {adjusted_prob:.3f} | "
+                        f"ROI: {estimated_roi:.2f}%"
+                    )
+                    
                     if estimated_roi >= 15:
+                        logger.info(Fore.GREEN + f"✅ APROVADA: {log_message}")
                         valuable_bets.append(
                             {
                                 "event_id": match["event_id"],
@@ -440,6 +450,8 @@ class BetProcessor:
                                 "estimated_roi": estimated_roi,
                             }
                         )
+                    else:
+                        logger.info(Fore.RED + f"❌ REJEITADA: {log_message}")
 
                 elif selection == "Away":
                     base_prob = away_stats["win_rate"] / 100
@@ -454,7 +466,17 @@ class BetProcessor:
                         adjusted_prob, odds_value
                     )
 
+                    # Detailed logging for each bet analysis
+                    log_message = (
+                        f"To Win - Away: {home_player} vs {away_player} | "
+                        f"Odds: {odds_value:.2f} | "
+                        f"Base Prob: {base_prob:.3f} | "
+                        f"Adj Prob: {adjusted_prob:.3f} | "
+                        f"ROI: {estimated_roi:.2f}%"
+                    )
+                    
                     if estimated_roi >= 15:
+                        logger.info(Fore.GREEN + f"✅ APROVADA: {log_message}")
                         valuable_bets.append(
                             {
                                 "event_id": match["event_id"],
@@ -472,6 +494,8 @@ class BetProcessor:
                                 "estimated_roi": estimated_roi,
                             }
                         )
+                    else:
+                        logger.info(Fore.RED + f"❌ REJEITADA: {log_message}")
 
             elif market == "Total" and handicap_value is not None:
                 all_games = (
@@ -486,7 +510,17 @@ class BetProcessor:
 
                     estimated_roi = self.calculate_estimated_roi(est_prob, odds_value)
 
+                    # Detailed logging for each bet analysis
+                    log_message = (
+                        f"Total - {selection} {handicap_value}: {home_player} vs {away_player} | "
+                        f"Odds: {odds_value:.2f} | "
+                        f"Est Prob: {est_prob:.3f} | "
+                        f"ROI: {estimated_roi:.2f}% | "
+                        f"Sample: {len(all_games)} matches"
+                    )
+                    
                     if estimated_roi >= 15:
+                        logger.info(Fore.GREEN + f"✅ APROVADA: {log_message}")
                         valuable_bets.append(
                             {
                                 "event_id": match["event_id"],
@@ -502,6 +536,8 @@ class BetProcessor:
                                 "estimated_roi": estimated_roi,
                             }
                         )
+                    else:
+                        logger.info(Fore.RED + f"❌ REJEITADA: {log_message}")
 
                 elif "Under" in selection:
                     under_count = sum(
@@ -512,7 +548,17 @@ class BetProcessor:
 
                     estimated_roi = self.calculate_estimated_roi(est_prob, odds_value)
 
+                    # Detailed logging for each bet analysis
+                    log_message = (
+                        f"Total - {selection} {handicap_value}: {home_player} vs {away_player} | "
+                        f"Odds: {odds_value:.2f} | "
+                        f"Est Prob: {est_prob:.3f} | "
+                        f"ROI: {estimated_roi:.2f}% | "
+                        f"Sample: {len(all_games)} matches"
+                    )
+                    
                     if estimated_roi >= 15:
+                        logger.info(Fore.GREEN + f"✅ APROVADA: {log_message}")
                         valuable_bets.append(
                             {
                                 "event_id": match["event_id"],
@@ -528,6 +574,8 @@ class BetProcessor:
                                 "estimated_roi": estimated_roi,
                             }
                         )
+                    else:
+                        logger.info(Fore.RED + f"❌ REJEITADA: {log_message}")
 
         return valuable_bets
 
@@ -599,6 +647,7 @@ class BetProcessor:
                     )
                     if cursor.rowcount > 0:
                         total_saved += 1
+                        logger.info(Fore.GREEN + f"💾 SALVA: {bet['bet_type']} {bet['selection']} @ {bet['odds']:.2f} (ROI: {bet['estimated_roi']:.2f}%)")
                 except sqlite3.Error as e:
                     logger.error(f"Erro ao salvar aposta: {e}")
 
@@ -622,11 +671,20 @@ class BetProcessor:
         for match in upcoming_matches:
             try:
                 event_id = match["event_id"]
+                logger.info(f"Analisando evento {event_id}: {match['home_team']} vs {match['away_team']}")
+                
                 odds_df = self.get_match_odds(event_id)
+                logger.info(f"Encontradas {len(odds_df)} odds para este evento")
 
                 if not odds_df.empty:
                     valuable_bets = self.analyze_bet_value(match, odds_df)
-                    all_valuable_bets.extend(valuable_bets)
+                    if valuable_bets:
+                        logger.info(f"Encontradas {len(valuable_bets)} apostas valiosas neste evento")
+                        all_valuable_bets.extend(valuable_bets)
+                    else:
+                        logger.info("Nenhuma aposta valiosa encontrada neste evento")
+                else:
+                    logger.warning("Nenhuma odd disponível para este evento")
 
                 # Marcar evento como processado (mesmo que não tenha odds valiosas)
                 self.mark_event_processed(event_id)
@@ -642,6 +700,7 @@ class BetProcessor:
 
         logger.info(f"Processamento concluído.")
         logger.info(f"Eventos processados: {len(processed_events)}")
+        logger.info(f"Total de apostas valiosas encontradas: {len(all_valuable_bets)}")
         logger.info(f"Total de apostas salvas: {total_saved}")
 
         if len(processed_events) > 0:

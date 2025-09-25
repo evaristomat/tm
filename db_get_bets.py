@@ -393,7 +393,7 @@ class BetProcessor:
         h2h_stats = self.get_head_to_head_stats(home_player, away_player)
 
         # FILTRO: Mínimo 15 partidas para ambos jogadores
-        if home_stats["total_matches"] < 15 or away_stats["total_matches"] < 15:
+        if home_stats["total_matches"] < 9 or away_stats["total_matches"] <9:
             logger.warning(f"❌ DESCARTADO - Dados insuficientes: {home_player}({home_stats['total_matches']}) vs {away_player}({away_stats['total_matches']}) - Mínimo 15 partidas")
             return []
 

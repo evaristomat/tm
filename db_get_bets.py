@@ -392,6 +392,11 @@ class BetProcessor:
 
         h2h_stats = self.get_head_to_head_stats(home_player, away_player)
 
+        # FILTRO: Mínimo 15 partidas para ambos jogadores
+        if home_stats["total_matches"] < 15 or away_stats["total_matches"] < 15:
+            logger.warning(f"❌ DESCARTADO - Dados insuficientes: {home_player}({home_stats['total_matches']}) vs {away_player}({away_stats['total_matches']}) - Mínimo 15 partidas")
+            return []
+
         valuable_bets = []
 
         for _, odd in odds_df.iterrows():
@@ -412,17 +417,12 @@ class BetProcessor:
                     base_prob = home_stats["win_rate"] / 100
 
                     if h2h_stats["total_matches"] > 0:
-                        adjusted_prob = (0.7 * base_prob) + (
-                            0.3 * h2h_stats["win_rate_player1"]
-                        )
+                        adjusted_prob = (0.7 * base_prob) + (0.3 * h2h_stats["win_rate_player1"])
                     else:
                         adjusted_prob = base_prob
 
-                    estimated_roi = self.calculate_estimated_roi(
-                        adjusted_prob, odds_value
-                    )
+                    estimated_roi = self.calculate_estimated_roi(adjusted_prob, odds_value)
 
-                    # Detailed logging for each bet analysis
                     log_message = (
                         f"To Win - Home: {home_player} vs {away_player} | "
                         f"Odds: {odds_value:.2f} | "
@@ -431,25 +431,22 @@ class BetProcessor:
                         f"ROI: {estimated_roi:.2f}%"
                     )
                     
-                    if estimated_roi >= 15:
+                    # ML: ROI >= 30%
+                    if estimated_roi >= 30:
                         logger.info(Fore.GREEN + f"✅ APROVADA: {log_message}")
-                        valuable_bets.append(
-                            {
-                                "event_id": match["event_id"],
-                                "league_name": match["league_name"],
-                                "home_team": home_player,
-                                "away_team": away_player,
-                                "event_time": match["event_time"],
-                                "bet_type": market,
-                                "selection": selection,
-                                "handicap": None,
-                                "odds": odds_value,
-                                "fair_odds": 1 / adjusted_prob
-                                if adjusted_prob > 0
-                                else 0,
-                                "estimated_roi": estimated_roi,
-                            }
-                        )
+                        valuable_bets.append({
+                            "event_id": match["event_id"],
+                            "league_name": match["league_name"],
+                            "home_team": home_player,
+                            "away_team": away_player,
+                            "event_time": match["event_time"],
+                            "bet_type": market,
+                            "selection": selection,
+                            "handicap": None,
+                            "odds": odds_value,
+                            "fair_odds": 1 / adjusted_prob if adjusted_prob > 0 else 0,
+                            "estimated_roi": estimated_roi,
+                        })
                     else:
                         logger.info(Fore.RED + f"❌ REJEITADA: {log_message}")
 
@@ -462,11 +459,8 @@ class BetProcessor:
                     else:
                         adjusted_prob = base_prob
 
-                    estimated_roi = self.calculate_estimated_roi(
-                        adjusted_prob, odds_value
-                    )
+                    estimated_roi = self.calculate_estimated_roi(adjusted_prob, odds_value)
 
-                    # Detailed logging for each bet analysis
                     log_message = (
                         f"To Win - Away: {home_player} vs {away_player} | "
                         f"Odds: {odds_value:.2f} | "
@@ -475,25 +469,22 @@ class BetProcessor:
                         f"ROI: {estimated_roi:.2f}%"
                     )
                     
-                    if estimated_roi >= 15:
+                    # ML: ROI >= 30%
+                    if estimated_roi >= 30:
                         logger.info(Fore.GREEN + f"✅ APROVADA: {log_message}")
-                        valuable_bets.append(
-                            {
-                                "event_id": match["event_id"],
-                                "league_name": match["league_name"],
-                                "home_team": home_player,
-                                "away_team": away_player,
-                                "event_time": match["event_time"],
-                                "bet_type": market,
-                                "selection": selection,
-                                "handicap": None,
-                                "odds": odds_value,
-                                "fair_odds": 1 / adjusted_prob
-                                if adjusted_prob > 0
-                                else 0,
-                                "estimated_roi": estimated_roi,
-                            }
-                        )
+                        valuable_bets.append({
+                            "event_id": match["event_id"],
+                            "league_name": match["league_name"],
+                            "home_team": home_player,
+                            "away_team": away_player,
+                            "event_time": match["event_time"],
+                            "bet_type": market,
+                            "selection": selection,
+                            "handicap": None,
+                            "odds": odds_value,
+                            "fair_odds": 1 / adjusted_prob if adjusted_prob > 0 else 0,
+                            "estimated_roi": estimated_roi,
+                        })
                     else:
                         logger.info(Fore.RED + f"❌ REJEITADA: {log_message}")
 
@@ -510,7 +501,6 @@ class BetProcessor:
 
                     estimated_roi = self.calculate_estimated_roi(est_prob, odds_value)
 
-                    # Detailed logging for each bet analysis
                     log_message = (
                         f"Total - {selection} {handicap_value}: {home_player} vs {away_player} | "
                         f"Odds: {odds_value:.2f} | "
@@ -519,36 +509,32 @@ class BetProcessor:
                         f"Sample: {len(all_games)} matches"
                     )
                     
-                    if estimated_roi >= 15:
+                    # Over/Under: ROI >= 20%
+                    if estimated_roi >= 20:
                         logger.info(Fore.GREEN + f"✅ APROVADA: {log_message}")
-                        valuable_bets.append(
-                            {
-                                "event_id": match["event_id"],
-                                "league_name": match["league_name"],
-                                "home_team": home_player,
-                                "away_team": away_player,
-                                "event_time": match["event_time"],
-                                "bet_type": market,
-                                "selection": selection,
-                                "handicap": handicap_value,
-                                "odds": odds_value,
-                                "fair_odds": 1 / est_prob if est_prob > 0 else 0,
-                                "estimated_roi": estimated_roi,
-                            }
-                        )
+                        valuable_bets.append({
+                            "event_id": match["event_id"],
+                            "league_name": match["league_name"],
+                            "home_team": home_player,
+                            "away_team": away_player,
+                            "event_time": match["event_time"],
+                            "bet_type": market,
+                            "selection": selection,
+                            "handicap": handicap_value,
+                            "odds": odds_value,
+                            "fair_odds": 1 / est_prob if est_prob > 0 else 0,
+                            "estimated_roi": estimated_roi,
+                        })
                     else:
                         logger.info(Fore.RED + f"❌ REJEITADA: {log_message}")
 
                 elif "Under" in selection:
-                    under_count = sum(
-                        1 for games in all_games if games < handicap_value
-                    )
+                    under_count = sum(1 for games in all_games if games < handicap_value)
                     total_games = len(all_games)
                     est_prob = under_count / total_games if total_games > 0 else 0
 
                     estimated_roi = self.calculate_estimated_roi(est_prob, odds_value)
 
-                    # Detailed logging for each bet analysis
                     log_message = (
                         f"Total - {selection} {handicap_value}: {home_player} vs {away_player} | "
                         f"Odds: {odds_value:.2f} | "
@@ -557,23 +543,22 @@ class BetProcessor:
                         f"Sample: {len(all_games)} matches"
                     )
                     
-                    if estimated_roi >= 15:
+                    # Over/Under: ROI >= 20%
+                    if estimated_roi >= 20:
                         logger.info(Fore.GREEN + f"✅ APROVADA: {log_message}")
-                        valuable_bets.append(
-                            {
-                                "event_id": match["event_id"],
-                                "league_name": match["league_name"],
-                                "home_team": home_player,
-                                "away_team": away_player,
-                                "event_time": match["event_time"],
-                                "bet_type": market,
-                                "selection": selection,
-                                "handicap": handicap_value,
-                                "odds": odds_value,
-                                "fair_odds": 1 / est_prob if est_prob > 0 else 0,
-                                "estimated_roi": estimated_roi,
-                            }
-                        )
+                        valuable_bets.append({
+                            "event_id": match["event_id"],
+                            "league_name": match["league_name"],
+                            "home_team": home_player,
+                            "away_team": away_player,
+                            "event_time": match["event_time"],
+                            "bet_type": market,
+                            "selection": selection,
+                            "handicap": handicap_value,
+                            "odds": odds_value,
+                            "fair_odds": 1 / est_prob if est_prob > 0 else 0,
+                            "estimated_roi": estimated_roi,
+                        })
                     else:
                         logger.info(Fore.RED + f"❌ REJEITADA: {log_message}")
 

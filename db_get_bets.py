@@ -469,8 +469,8 @@ class BetProcessor:
                         f"ROI: {estimated_roi:.2f}%"
                     )
                     
-                    # ML: ROI >= 30%
-                    if estimated_roi >= 30:
+                    # ML: ROI >= 40%
+                    if estimated_roi >= 40:
                         logger.info(Fore.GREEN + f"✅ APROVADA: {log_message}")
                         valuable_bets.append({
                             "event_id": match["event_id"],
@@ -509,8 +509,8 @@ class BetProcessor:
                         f"Sample: {len(all_games)} matches"
                     )
                     
-                    # Over/Under: ROI >= 20%
-                    if estimated_roi >= 20:
+                    # Over/Under: ROI >= 30%
+                    if estimated_roi >= 30:
                         logger.info(Fore.GREEN + f"✅ APROVADA: {log_message}")
                         valuable_bets.append({
                             "event_id": match["event_id"],
@@ -543,8 +543,8 @@ class BetProcessor:
                         f"Sample: {len(all_games)} matches"
                     )
                     
-                    # Over/Under: ROI >= 20%
-                    if estimated_roi >= 20:
+                    # Over/Under: ROI >= 30%
+                    if estimated_roi >= 30:
                         logger.info(Fore.GREEN + f"✅ APROVADA: {log_message}")
                         valuable_bets.append({
                             "event_id": match["event_id"],

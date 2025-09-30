@@ -445,6 +445,42 @@ class BetProcessor:
 
         return False, est_prob, roi
 
+    def analyze_over_under_bet(self, home_games, away_games, handicap_value, selection, odds_value):
+        """
+        Análise melhorada de Over/Under considerando concordância entre jogadores
+        """
+        if "Over" in selection:
+            home_count = sum(1 for g in home_games if g > handicap_value)
+            away_count = sum(1 for g in away_games if g > handicap_value)
+        else:
+            home_count = sum(1 for g in home_games if g < handicap_value)
+            away_count = sum(1 for g in away_games if g < handicap_value)
+        
+        home_prob = home_count / len(home_games) if home_games else 0
+        away_prob = away_count / len(away_games) if away_games else 0
+        
+        prob_diff = abs(home_prob - away_prob)
+        
+        if prob_diff < 0.20:
+            if home_prob >= 0.60 and away_prob >= 0.60:
+                est_prob = max(home_prob, away_prob)
+                min_roi = 15
+            elif home_prob <= 0.40 and away_prob <= 0.40:
+                est_prob = (home_prob + away_prob) / 2
+                min_roi = 40
+            else:
+                est_prob = (home_prob + away_prob) / 2
+                min_roi = 25
+        else:
+            est_prob = (home_prob + away_prob) / 2
+            min_roi = 30
+        
+        roi = self.calculate_estimated_roi(est_prob, odds_value)
+        accept = roi >= min_roi
+        
+        return accept, est_prob, roi, home_prob, away_prob, min_roi
+
+
     def analyze_bet_value(self, match, odds_df):
         home_player = match["home_team"]
         away_player = match["away_team"]
@@ -508,79 +544,38 @@ class BetProcessor:
                 home_games = home_stats["games_per_match_list"]
                 away_games = away_stats["games_per_match_list"]
 
-                if "Over" in selection:
-                    home_over_count = sum(1 for games in home_games if games > handicap_value)
-                    home_over_prob = home_over_count / len(home_games) if home_games else 0
+                accept_bet, est_prob, estimated_roi, home_prob, away_prob, min_roi = self.analyze_over_under_bet(
+                    home_games, away_games, handicap_value, selection, odds_value
+                )
 
-                    away_over_count = sum(1 for games in away_games if games > handicap_value)
-                    away_over_prob = away_over_count / len(away_games) if away_games else 0
-
-                    est_prob = (home_over_prob + away_over_prob) / 2
-                    estimated_roi = self.calculate_estimated_roi(est_prob, odds_value)
-
-                    log_message = (
-                        f"Total - {selection} {handicap_value}: {home_player} vs {away_player} | "
-                        f"Odds: {odds_value:.2f} | "
-                        f"Home Over%: {home_over_prob:.3f} | "
-                        f"Away Over%: {away_over_prob:.3f} | "
-                        f"Avg Prob: {est_prob:.3f} | "
-                        f"ROI: {estimated_roi:.2f}%"
-                    )
-                    
-                    if estimated_roi >= MIN_ROI_OVER_UNDER:
-                        logger.info(Fore.GREEN + f"✅ APROVADA: {log_message}")
-                        valuable_bets.append({
-                            "event_id": match["event_id"],
-                            "league_name": match["league_name"],
-                            "home_team": home_player,
-                            "away_team": away_player,
-                            "event_time": match["event_time"],
-                            "bet_type": market,
-                            "selection": selection,
-                            "handicap": handicap_value,
-                            "odds": odds_value,
-                            "fair_odds": 1 / est_prob if est_prob > 0 else 0,
-                            "estimated_roi": estimated_roi,
-                        })
-                    else:
-                        logger.info(Fore.RED + f"❌ REJEITADA: {log_message}")
-
-                elif "Under" in selection:
-                    home_under_count = sum(1 for games in home_games if games < handicap_value)
-                    home_under_prob = home_under_count / len(home_games) if home_games else 0
-
-                    away_under_count = sum(1 for games in away_games if games < handicap_value)
-                    away_under_prob = away_under_count / len(away_games) if away_games else 0
-
-                    est_prob = (home_under_prob + away_under_prob) / 2
-                    estimated_roi = self.calculate_estimated_roi(est_prob, odds_value)
-
-                    log_message = (
-                        f"Total - {selection} {handicap_value}: {home_player} vs {away_player} | "
-                        f"Odds: {odds_value:.2f} | "
-                        f"Home Under%: {home_under_prob:.3f} | "
-                        f"Away Under%: {away_under_prob:.3f} | "
-                        f"Avg Prob: {est_prob:.3f} | "
-                        f"ROI: {estimated_roi:.2f}%"
-                    )
-                    
-                    if estimated_roi >= MIN_ROI_OVER_UNDER:
-                        logger.info(Fore.GREEN + f"✅ APROVADA: {log_message}")
-                        valuable_bets.append({
-                            "event_id": match["event_id"],
-                            "league_name": match["league_name"],
-                            "home_team": home_player,
-                            "away_team": away_player,
-                            "event_time": match["event_time"],
-                            "bet_type": market,
-                            "selection": selection,
-                            "handicap": handicap_value,
-                            "odds": odds_value,
-                            "fair_odds": 1 / est_prob if est_prob > 0 else 0,
-                            "estimated_roi": estimated_roi,
-                        })
-                    else:
-                        logger.info(Fore.RED + f"❌ REJEITADA: {log_message}")
+                prob_label = "Over%" if "Over" in selection else "Under%"
+                log_message = (
+                    f"Total - {selection} {handicap_value}: {home_player} vs {away_player} | "
+                    f"Odds: {odds_value:.2f} | "
+                    f"Home {prob_label}: {home_prob:.3f} | "
+                    f"Away {prob_label}: {away_prob:.3f} | "
+                    f"Est Prob: {est_prob:.3f} | "
+                    f"ROI: {estimated_roi:.2f}% | "
+                    f"Min ROI: {min_roi}%"
+                )
+                
+                if accept_bet:
+                    logger.info(Fore.GREEN + f"✅ APROVADA: {log_message}")
+                    valuable_bets.append({
+                        "event_id": match["event_id"],
+                        "league_name": match["league_name"],
+                        "home_team": home_player,
+                        "away_team": away_player,
+                        "event_time": match["event_time"],
+                        "bet_type": market,
+                        "selection": selection,
+                        "handicap": handicap_value,
+                        "odds": odds_value,
+                        "fair_odds": 1 / est_prob if est_prob > 0 else 0,
+                        "estimated_roi": estimated_roi,
+                    })
+                else:
+                    logger.info(Fore.RED + f"❌ REJEITADA: {log_message}")
 
         return valuable_bets
 

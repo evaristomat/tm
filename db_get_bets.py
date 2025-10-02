@@ -395,10 +395,8 @@ class BetProcessor:
         home_wr = home_stats["win_rate"]
         away_wr = away_stats["win_rate"]
 
-        # Calcular diferencial de força
         wr_diff = abs(home_wr - away_wr)
 
-        # Normalizar win rates para somar 100% (ajuste realista do confronto)
         total_wr = home_wr + away_wr
         if total_wr > 0:
             home_adjusted = home_wr / total_wr
@@ -420,23 +418,21 @@ class BetProcessor:
 
         player_wr = home_wr if selection == "Home" else away_wr
 
-        # Critérios de aceitação baseados no contexto do confronto
-
-        # Cenário 1: Dominância clara (diferença >= 30%)
+        # Dominância clara (diferença >= 30%)
         if wr_diff >= 30:
-            if player_wr > opponent_wr and roi >= 5:
+            if player_wr > opponent_wr and roi >= 15:
                 return True, est_prob, roi
             if player_wr < opponent_wr and roi >= 25 and edge >= 0.20:
                 return True, est_prob, roi
 
-        # Cenário 2: Vantagem moderada (diferença 15-30%)
+        # Vantagem moderada (diferença 15-30%)
         elif wr_diff >= 15:
-            if player_wr > opponent_wr and roi >= 10:
+            if player_wr > opponent_wr and roi >= 15:
                 return True, est_prob, roi
             if player_wr < opponent_wr and roi >= 30:
                 return True, est_prob, roi
 
-        # Cenário 3: Jogo equilibrado (diferença < 15%)
+        # Jogo equilibrado (diferença < 15%)
         else:
             if player_wr >= 50 and roi >= 15:
                 return True, est_prob, roi

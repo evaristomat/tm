@@ -13,7 +13,7 @@ logging.basicConfig(
 logger = logging.getLogger("bet_processor")
 
 # Configurações globais de ROI mínimo
-MIN_ROI_ML = 20  # Reduzido de 15 para 8
+MIN_ROI_ML = 8  # Reduzido de 15 para 8
 MIN_ROI_OVER_UNDER = 25
 
 # Parâmetros da nova fórmula
@@ -23,7 +23,7 @@ MIN_H2H_MATCHES = 3  # Mínimo de confrontos para considerar H2H
 MIN_EDGE = 0.05  # Edge mínimo (prob_estimada - prob_implícita)
 
 
-class BetProcessorV2:
+class BetProcessor:
     def __init__(self, tm_db_path="tm_data.db", bets_db_path="bets.db"):
         self.tm_db_path = tm_db_path
         self.bets_db_path = bets_db_path
@@ -38,6 +38,7 @@ class BetProcessorV2:
         self.init_bets_db()
 
     def init_bets_db(self):
+        """Mantém estrutura original do banco - SEM MODIFICAÇÕES"""
         conn = sqlite3.connect(self.bets_db_path)
         cursor = conn.cursor()
 
@@ -60,10 +61,6 @@ class BetProcessorV2:
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             actual_result TEXT,
-            h2h_matches INTEGER DEFAULT 0,
-            h2h_weight REAL DEFAULT 0,
-            strength_diff REAL DEFAULT 0,
-            edge REAL DEFAULT 0,
             UNIQUE(event_id, bet_type, selection, handicap)
         )
         """)
@@ -420,7 +417,7 @@ class BetProcessorV2:
             and away_stats["total_matches"] >= 5
         )
 
-        return accept_bet, est_prob, roi, edge, strength_diff, h2h_matches, h2h_weight
+        return accept_bet, est_prob, roi
 
     def analyze_over_under_bet(
         self, home_games, away_games, handicap_value, selection, odds_value
@@ -459,6 +456,51 @@ class BetProcessorV2:
 
         return accept, est_prob, roi, home_prob, away_prob, min_roi
 
+    def filter_conflicting_bets(self, valuable_bets, home_player, away_player):
+        """Mantém lógica original de filtro de conflitos"""
+        home_bets = [
+            b
+            for b in valuable_bets
+            if b["bet_type"] == "To Win" and b["selection"] == "Home"
+        ]
+        away_bets = [
+            b
+            for b in valuable_bets
+            if b["bet_type"] == "To Win" and b["selection"] == "Away"
+        ]
+        other_bets = [b for b in valuable_bets if b["bet_type"] != "To Win"]
+
+        if not home_bets or not away_bets:
+            return valuable_bets
+
+        h2h_stats = self.get_head_to_head_stats(home_player, away_player)
+
+        if h2h_stats["total_matches"] > 0:
+            if h2h_stats["player1_wins"] > h2h_stats["player2_wins"]:
+                logger.info(
+                    f"H2H: {home_player} tem mais vitórias ({h2h_stats['player1_wins']} vs {h2h_stats['player2_wins']})"
+                )
+                return home_bets + other_bets
+            else:
+                logger.info(
+                    f"H2H: {away_player} tem mais vitórias ({h2h_stats['player2_wins']} vs {h2h_stats['player1_wins']})"
+                )
+                return away_bets + other_bets
+        else:
+            home_roi = max(b["estimated_roi"] for b in home_bets)
+            away_roi = max(b["estimated_roi"] for b in away_bets)
+
+            if home_roi > away_roi:
+                logger.info(
+                    f"ROI: Home tem maior ROI ({home_roi:.2f}% vs {away_roi:.2f}%)"
+                )
+                return home_bets + other_bets
+            else:
+                logger.info(
+                    f"ROI: Away tem maior ROI ({away_roi:.2f}% vs {home_roi:.2f}%)"
+                )
+                return away_bets + other_bets
+
     def analyze_bet_value(self, match, odds_df):
         home_player = match["home_team"]
         away_player = match["away_team"]
@@ -495,15 +537,7 @@ class BetProcessorV2:
                     handicap_value = None
 
             if market == "To Win":
-                (
-                    accept_bet,
-                    est_prob,
-                    estimated_roi,
-                    edge,
-                    strength_diff,
-                    h2h_matches,
-                    h2h_weight,
-                ) = self.analyze_ml_bet_v2(
+                accept_bet, est_prob, estimated_roi = self.analyze_ml_bet_v2(
                     home_stats,
                     away_stats,
                     home_player,
@@ -516,9 +550,8 @@ class BetProcessorV2:
                     f"ML V2 - {selection}: {home_player}({home_stats['weighted_win_rate']:.1f}%) vs {away_player}({away_stats['weighted_win_rate']:.1f}%) | "
                     f"Odds: {odds_value:.2f} | "
                     f"Est Prob: {est_prob:.3f} | "
-                    f"Edge: {edge:.3f} | "
-                    f"ROI: {estimated_roi:.2f}% | "
-                    f"H2H: {h2h_matches} jogos (peso: {h2h_weight:.2f})"
+                    f"Edge: {est_prob - (1 / odds_value):.3f} | "
+                    f"ROI: {estimated_roi:.2f}%"
                 )
 
                 if accept_bet:
@@ -536,10 +569,6 @@ class BetProcessorV2:
                             "odds": odds_value,
                             "fair_odds": 1 / est_prob if est_prob > 0 else 0,
                             "estimated_roi": estimated_roi,
-                            "h2h_matches": h2h_matches,
-                            "h2h_weight": h2h_weight,
-                            "strength_diff": strength_diff,
-                            "edge": edge,
                         }
                     )
                 else:
@@ -581,18 +610,15 @@ class BetProcessorV2:
                             "odds": odds_value,
                             "fair_odds": 1 / est_prob if est_prob > 0 else 0,
                             "estimated_roi": estimated_roi,
-                            "h2h_matches": 0,
-                            "h2h_weight": 0,
-                            "strength_diff": 0,
-                            "edge": est_prob - (1 / odds_value),
                         }
                     )
                 else:
                     logger.info(Fore.RED + f"❌ REJEITADA: {log_message}")
 
-        return valuable_bets
+        return self.filter_conflicting_bets(valuable_bets, home_player, away_player)
 
     def save_top_bets_by_league(self, all_bets):
+        """Mantém estrutura original do banco - SEM NOVAS COLUNAS"""
         if not all_bets:
             return 0
 
@@ -632,13 +658,13 @@ class BetProcessorV2:
 
             for bet in top_bets:
                 try:
+                    # ESTRUTURA ORIGINAL - SEM NOVAS COLUNAS
                     cursor.execute(
                         """
                     INSERT OR REPLACE INTO bets 
                     (event_id, league_name, home_team, away_team, event_time, 
-                     bet_type, selection, handicap, odds, fair_odds, estimated_roi,
-                     h2h_matches, h2h_weight, strength_diff, edge)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     bet_type, selection, handicap, odds, fair_odds, estimated_roi)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                         (
                             bet["event_id"],
@@ -652,17 +678,13 @@ class BetProcessorV2:
                             bet["odds"],
                             bet["fair_odds"],
                             bet["estimated_roi"],
-                            bet["h2h_matches"],
-                            bet["h2h_weight"],
-                            bet["strength_diff"],
-                            bet["edge"],
                         ),
                     )
                     if cursor.rowcount > 0:
                         total_saved += 1
                         logger.info(
                             Fore.GREEN
-                            + f"💾 SALVA: {bet['bet_type']} {bet['selection']} @ {bet['odds']:.2f} (ROI: {bet['estimated_roi']:.2f}%, Edge: {bet['edge']:.3f})"
+                            + f"💾 SALVA: {bet['bet_type']} {bet['selection']} @ {bet['odds']:.2f} (ROI: {bet['estimated_roi']:.2f}%)"
                         )
                 except sqlite3.Error as e:
                     logger.error(f"Erro ao salvar aposta: {e}")
@@ -728,7 +750,7 @@ class BetProcessorV2:
 
 
 def main():
-    processor = BetProcessorV2()
+    processor = BetProcessor()
     processor.process_all_matches()
 
 

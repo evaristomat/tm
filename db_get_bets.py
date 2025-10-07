@@ -101,7 +101,7 @@ class BetProcessor:
 
         try:
             cursor.execute(
-                "INSERT OR IGNORE INTO processed_events (event_id) VALUES (?",
+                "INSERT OR IGNORE INTO processed_events (event_id) VALUES (?)",  # ✅ CORRIGIDO
                 (event_id,),
             )
             conn.commit()
@@ -109,6 +109,7 @@ class BetProcessor:
             logger.error(f"Erro ao marcar evento {event_id}: {e}")
 
         conn.close()
+
 
     def get_all_upcoming_matches(self):
         conn = sqlite3.connect(self.tm_db_path)

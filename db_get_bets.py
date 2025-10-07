@@ -13,7 +13,7 @@ logging.basicConfig(
 logger = logging.getLogger("bet_processor")
 
 # Configurações globais de ROI mínimo
-MIN_ROI_ML = 20
+MIN_ROI_ML = 25  # ALTERADO: de 20 para 25%
 MIN_ROI_OVER_UNDER = 25
 
 # Parâmetros da nova fórmula
@@ -101,7 +101,7 @@ class BetProcessor:
 
         try:
             cursor.execute(
-                "INSERT OR IGNORE INTO processed_events (event_id) VALUES (?)",
+                "INSERT OR IGNORE INTO processed_events (event_id) VALUES (?",
                 (event_id,),
             )
             conn.commit()
@@ -387,11 +387,11 @@ class BetProcessor:
 
         return prob_final, strength_diff, h2h_matches, h2h_weight
 
-    def analyze_ml_bet_v2(
+    def analyze_ml_bet_v3(
         self, home_stats, away_stats, home_player, away_player, selection, odds_value
     ):
         """
-        Nova análise ML com Força Relativa + Confrontos Diretos
+        NOVA ANÁLISE ML COM FILTROS APLICADOS
         """
         prob_home, strength_diff, h2h_matches, h2h_weight = (
             self.calculate_ml_probability_v2(
@@ -409,9 +409,34 @@ class BetProcessor:
         edge = est_prob - implied_prob
         roi = ((est_prob * (odds_value - 1)) - (1 - est_prob)) * 100
 
-        # Critérios de aceitação mais rigorosos
+        # APLICAR FILTROS SOLICITADOS
+        # ❌ Não pegar odds 3.5+
+        if odds_value >= 3.5:
+            logger.info(
+                Fore.RED + f"❌ FILTRO ODDS: {odds_value:.2f} >= 3.5 (rejeitada)"
+            )
+            return False, est_prob, roi
+
+        # ❌ Não pegar odds 1.0-1.5
+        if 1.0 <= odds_value <= 1.5:
+            logger.info(
+                Fore.RED + f"❌ FILTRO ODDS: {odds_value:.2f} entre 1.0-1.5 (rejeitada)"
+            )
+            return False, est_prob, roi
+
+        # ❌ Não pegar ROI 0-20%
+        if 0 <= roi <= 20:
+            logger.info(Fore.RED + f"❌ FILTRO ROI: {roi:.2f}% entre 0-20% (rejeitada)")
+            return False, est_prob, roi
+
+        # ❌ Não pegar ROI 150%+
+        if roi >= 150:
+            logger.info(Fore.RED + f"❌ FILTRO ROI: {roi:.2f}% >= 150% (rejeitada)")
+            return False, est_prob, roi
+
+        # Critérios de aceitação originais + filtros
         accept_bet = (
-            roi >= MIN_ROI_ML
+            roi >= MIN_ROI_ML  # 25%
             and edge >= MIN_EDGE
             and home_stats["total_matches"] >= 5
             and away_stats["total_matches"] >= 5
@@ -419,18 +444,26 @@ class BetProcessor:
 
         return accept_bet, est_prob, roi
 
-    def analyze_over_under_bet(
+    def analyze_over_under_bet_filtered(
         self, home_games, away_games, handicap_value, selection, odds_value
     ):
         """
-        Análise Over/Under (mantida igual)
+        ANÁLISE OVER/UNDER COM FILTRO APLICADO - APENAS UNDER
         """
+        # ✅ FILTRO: Apenas apostas Under
         if "Over" in selection:
-            home_count = sum(1 for g in home_games if g > handicap_value)
-            away_count = sum(1 for g in away_games if g > handicap_value)
-        else:
+            logger.info(
+                Fore.RED
+                + f"❌ FILTRO O/U: {selection} é Over - apenas Under aceito (rejeitada)"
+            )
+            return False, 0, 0, 0, 0, 0
+
+        # Lógica original para Under
+        if "Under" in selection:
             home_count = sum(1 for g in home_games if g < handicap_value)
             away_count = sum(1 for g in away_games if g < handicap_value)
+        else:
+            return False, 0, 0, 0, 0, 0
 
         home_prob = home_count / len(home_games) if home_games else 0
         away_prob = away_count / len(away_games) if away_games else 0
@@ -492,12 +525,12 @@ class BetProcessor:
 
             if home_roi > away_roi:
                 logger.info(
-                    f"ROI: Home tem maior ROI ({home_roi:.2f}% vs {away_roi:.2f}%)"
+                    f"Sem H2H: Home ROI ({home_roi:.2f}%) > Away ROI ({away_roi:.2f}%)"
                 )
                 return home_bets + other_bets
             else:
                 logger.info(
-                    f"ROI: Away tem maior ROI ({away_roi:.2f}% vs {home_roi:.2f}%)"
+                    f"Sem H2H: Away ROI ({away_roi:.2f}%) > Home ROI ({home_roi:.2f}%)"
                 )
                 return away_bets + other_bets
 
@@ -537,7 +570,8 @@ class BetProcessor:
                     handicap_value = None
 
             if market == "To Win":
-                accept_bet, est_prob, estimated_roi = self.analyze_ml_bet_v2(
+                # USAR NOVA ANÁLISE ML COM FILTROS
+                accept_bet, est_prob, estimated_roi = self.analyze_ml_bet_v3(
                     home_stats,
                     away_stats,
                     home_player,
@@ -547,7 +581,7 @@ class BetProcessor:
                 )
 
                 log_message = (
-                    f"ML V2 - {selection}: {home_player}({home_stats['weighted_win_rate']:.1f}%) vs {away_player}({away_stats['weighted_win_rate']:.1f}%) | "
+                    f"ML V3 - {selection}: {home_player}({home_stats['weighted_win_rate']:.1f}%) vs {away_player}({away_stats['weighted_win_rate']:.1f}%) | "
                     f"Odds: {odds_value:.2f} | "
                     f"Est Prob: {est_prob:.3f} | "
                     f"Edge: {est_prob - (1 / odds_value):.3f} | "
@@ -578,13 +612,14 @@ class BetProcessor:
                 home_games = home_stats["games_per_match_list"]
                 away_games = away_stats["games_per_match_list"]
 
+                # USAR NOVA ANÁLISE O/U COM FILTROS (APENAS UNDER)
                 accept_bet, est_prob, estimated_roi, home_prob, away_prob, min_roi = (
-                    self.analyze_over_under_bet(
+                    self.analyze_over_under_bet_filtered(
                         home_games, away_games, handicap_value, selection, odds_value
                     )
                 )
 
-                prob_label = "Over%" if "Over" in selection else "Under%"
+                prob_label = "Under%"  # Sempre Under agora
                 log_message = (
                     f"Total - {selection} {handicap_value}: {home_player} vs {away_player} | "
                     f"Odds: {odds_value:.2f} | "
@@ -694,10 +729,10 @@ class BetProcessor:
         return total_saved
 
     def process_all_matches(self):
-        logger.info("🚀 Iniciando processamento com NOVA LÓGICA V2...")
-        logger.info(
-            f"📊 Parâmetros: MIN_ROI_ML={MIN_ROI_ML}%, MIN_EDGE={MIN_EDGE}, STRENGTH_SCALE={STRENGTH_SCALE_FACTOR}"
-        )
+        logger.info("🚀 Iniciando processamento com FILTROS V3 APLICADOS...")
+        logger.info(f"📊 Parâmetros: MIN_ROI_ML={MIN_ROI_ML}%, MIN_EDGE={MIN_EDGE}")
+        logger.info("🔧 FILTROS ML: Odds 1.5-3.5, ROI 20-150%")
+        logger.info("🔧 FILTROS O/U: APENAS Under")
 
         upcoming_matches = self.get_all_upcoming_matches()
         logger.info(f"Jogos não processados para analisar: {len(upcoming_matches)}")
@@ -740,7 +775,7 @@ class BetProcessor:
 
         total_saved = self.save_top_bets_by_league(all_valuable_bets)
 
-        logger.info(f"✅ Processamento V2 concluído.")
+        logger.info(f"✅ Processamento V3 FILTRADO concluído.")
         logger.info(f"Eventos processados: {len(processed_events)}")
         logger.info(f"Total de apostas valiosas encontradas: {len(all_valuable_bets)}")
         logger.info(f"Total de apostas salvas: {total_saved}")

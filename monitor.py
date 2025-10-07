@@ -624,8 +624,10 @@ class TableTennisMonitor:
         self.db = DatabaseManager()
         self.sport_id = 92
         self.leagues = {
-            10048210: "Czech Liga Pro",
+            10047071: "Setka Cup Women",
+            10047098: "Setka Cup",
             10068516: "Challenger Series TT",
+            10048210: "Czech Liga Pro",
             10073432: "TT Cup",
             10073465: "TT Elite Series",
         }

@@ -13,7 +13,7 @@ logging.basicConfig(
 logger = logging.getLogger("bet_processor")
 
 # Configurações globais de ROI mínimo
-MIN_ROI_ML = 8  # Reduzido de 15 para 8
+MIN_ROI_ML = 20
 MIN_ROI_OVER_UNDER = 25
 
 # Parâmetros da nova fórmula

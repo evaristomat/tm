@@ -4,44 +4,163 @@ import numpy as np
 from datetime import datetime, date
 import logging
 from colorama import Fore, Style, init
+from collections import defaultdict
 
 init(autoreset=True)
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
-logger = logging.getLogger("bet_processor")
+logger = logging.getLogger("bet_processor_elo")
 
-# Configurações globais de ROI mínimo
-MIN_ROI_ML = 20
-MIN_ROI_OVER_UNDER = 25
+# --- NOVOS PARÂMETROS DO MODELO ELO ---
+K_FACTOR = 32  # Fator de ajuste do ELO. Comum em xadrez.
+DEFAULT_ELO = 1500  # Rating inicial para novos jogadores.
 
-# Parâmetros da nova fórmula
-STRENGTH_SCALE_FACTOR = 0.5  # Fator de escala para diferença de força
-H2H_MAX_WEIGHT = 0.3  # Peso máximo dos confrontos diretos
-MIN_H2H_MATCHES = 3  # Mínimo de confrontos para considerar H2H
-MIN_EDGE = 0.05  # Edge mínimo (prob_estimada - prob_implícita)
+# --- PARÂMETROS DE FILTRO DE APOSTAS (AJUSTADOS) ---
+MIN_ROI_ML = 5  # ALTERADO: de 25 para 5%
+MIN_EDGE = 0.01  # ALTERADO: de 0.05 para 0.01
+
+# --- NOVOS PARÂMETROS PARA REFINAMENTO ML ---
+# Threshold de diferença de ELO para considerar um jogador favorito forte
+ELO_DIFFERENCE_STRONG_FAVORITE = (
+    150  # Ex: Se a diferença for maior que 150, o favorito é forte
+)
+# Multiplicador para o Edge em apostas de favoritos fortes (para exigir um Edge maior)
+EDGE_MULTIPLIER_STRONG_FAVORITE = 1.5
 
 
 class BetProcessor:
-    def __init__(self, tm_db_path="tm_data.db", bets_db_path="bets.db"):
+    def __init__(
+        self,
+        tm_db_path="tm_data.db",
+        bets_db_path="bets.db",
+        results_db_path="table_tennis_results.db",
+    ):
         self.tm_db_path = tm_db_path
         self.bets_db_path = bets_db_path
-        # Ligas atualizadas
+        self.results_db_path = results_db_path
         self.leagues = {
             10047071: "Setka Cup Women",
             10047098: "Setka Cup",
+            10068516: "Challenger Series TT",
             10048210: "Czech Liga Pro",
             10073432: "TT Cup",
             10073465: "TT Elite Series",
         }
         self.init_bets_db()
+        # Calcula o ELO de todos os jogadores com base no histórico ao inicializar
+        logger.info(
+            "🧠 Calculando ratings ELO de todos os jogadores a partir do histórico..."
+        )
+        self.player_ratings = self._calculate_all_player_elos()
+        logger.info(
+            f"✅ Ratings ELO calculados para {len(self.player_ratings)} jogadores."
+        )
+
+    # ====================================================================
+    # NOVA LÓGICA DE RATING ELO
+    # ====================================================================
+
+    def _get_expected_score(self, rating1, rating2):
+        """Calcula a probabilidade de vitória do jogador 1 contra o jogador 2."""
+        return 1 / (1 + 10 ** ((rating2 - rating1) / 400))
+
+    def _update_ratings(self, rating1, rating2, score1, score2):
+        """Atualiza os ratings ELO com base no resultado da partida."""
+        expected1 = self._get_expected_score(rating1, rating2)
+        expected2 = self._get_expected_score(rating2, rating1)
+
+        new_rating1 = rating1 + K_FACTOR * (score1 - expected1)
+        new_rating2 = rating2 + K_FACTOR * (score2 - expected2)
+
+        return new_rating1, new_rating2
+
+    def _calculate_all_player_elos(self):
+        """Processa todos os jogos históricos para gerar os ratings ELO atuais."""
+        conn = sqlite3.connect(self.results_db_path)
+        # Busca todos os jogos finalizados em ordem cronológica
+        query = """
+        SELECT home_name, away_name, score
+        FROM events 
+        WHERE time_status = 3 AND score IS NOT NULL AND score != ''
+        ORDER BY event_time ASC
+        """
+        df = pd.read_sql_query(query, conn)
+        conn.close()
+
+        ratings = defaultdict(lambda: DEFAULT_ELO)
+
+        for _, row in df.iterrows():
+            home_player, away_player = row["home_name"], row["away_name"]
+
+            try:
+                home_score, away_score = map(int, row["score"].split("-"))
+            except ValueError:
+                continue  # Ignora scores mal formatados
+
+            # Define o resultado (1 para vitória, 0 para derrota)
+            s1 = 1 if home_score > away_score else 0
+            s2 = 1 - s1
+
+            # Pega os ratings atuais (ou o padrão se for um novo jogador)
+            r1, r2 = ratings[home_player], ratings[away_player]
+
+            # Calcula e atualiza os novos ratings
+            new_r1, new_r2 = self._update_ratings(r1, r2, s1, s2)
+            ratings[home_player] = new_r1
+            ratings[away_player] = new_r2
+
+        return dict(ratings)
+
+    def analyze_ml_bet_elo(self, home_rating, away_rating, selection, odds_value):
+        """
+        Analisa uma aposta de Moneyline (ML) usando o modelo ELO.
+        Retorna (accept_bet, est_prob, roi, edge, decision_reason)
+        """
+        # Calcula a probabilidade de vitória do mandante com base no ELO
+        prob_home = self._get_expected_score(home_rating, away_rating)
+
+        if selection == "Home":
+            est_prob = prob_home
+        else:  # Away
+            est_prob = 1 - prob_home
+
+        # Métricas de valor
+        implied_prob = 1 / odds_value
+        edge = est_prob - implied_prob
+        roi = ((est_prob * (odds_value - 1)) - (1 - est_prob)) * 100
+
+        decision_reason = "Aceita: ROI e Edge ok"
+
+        # Lógica de refinamento para apostas ML (To Win)
+        required_edge = MIN_EDGE
+        # Se for um favorito forte (grande diferença de ELO), podemos exigir um Edge maior
+        if abs(home_rating - away_rating) > ELO_DIFFERENCE_STRONG_FAVORITE:
+            required_edge *= EDGE_MULTIPLIER_STRONG_FAVORITE
+            decision_reason = f"Rejeitada (ML): Favorito forte, Edge {edge:.4f} (min {required_edge}) não atendido"
+
+        # Critério final de aceitação
+        accept_bet = roi >= MIN_ROI_ML and edge >= required_edge
+        if not accept_bet:
+            if (
+                "Favorito forte" not in decision_reason
+            ):  # Evita sobrescrever se já foi definido acima
+                decision_reason = f"Rejeitada (ML): ROI {roi:.2f}% (min {MIN_ROI_ML}%) ou EDGE {edge:.4f} (min {required_edge}) não atendidos"
+            logger.info(Fore.RED + f"❌ FILTRO FINAL: {decision_reason}")
+
+        return accept_bet, est_prob, roi, edge, decision_reason
+
+    # ====================================================================
+    # FUNÇÕES MANTIDAS E ADAPTADAS DA ESTRUTURA ORIGINAL
+    # ====================================================================
 
     def init_bets_db(self):
-        """Mantém estrutura original do banco - SEM MODIFICAÇÕES"""
+        """Atualiza e mantém a estrutura do banco de dados de apostas com novos campos."""
         conn = sqlite3.connect(self.bets_db_path)
         cursor = conn.cursor()
 
+        # Tabela bets - Adicionando novas colunas se não existirem
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS bets (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,692 +180,483 @@ class BetProcessor:
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             actual_result TEXT,
+            home_elo_at_bet REAL, -- NOVO
+            away_elo_at_bet REAL, -- NOVO
+            elo_prob_home REAL,   -- NOVO
+            implied_prob REAL,    -- NOVO
+            bet_edge REAL,        -- NOVO
+            min_roi_required REAL, -- NOVO
+            bet_decision_reason TEXT, -- NOVO
+            player_form_home TEXT, -- NOVO (Placeholder por enquanto)
+            player_form_away TEXT, -- NOVO (Placeholder por enquanto)
+            h2h_summary TEXT,      -- NOVO (Placeholder por enquanto)
+            bet_timestamp TIMESTAMP, -- NOVO
             UNIQUE(event_id, bet_type, selection, handicap)
         )
         """)
 
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS processed_events (
-            event_id INTEGER PRIMARY KEY,
-            processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        """)
+        # Adicionar colunas individualmente se não existirem (para compatibilidade com DBs existentes)
+        new_columns = {
+            "home_elo_at_bet": "REAL",
+            "away_elo_at_bet": "REAL",
+            "elo_prob_home": "REAL",
+            "implied_prob": "REAL",
+            "bet_edge": "REAL",
+            "min_roi_required": "REAL",
+            "bet_decision_reason": "TEXT",
+            "player_form_home": "TEXT",
+            "player_form_away": "TEXT",
+            "h2h_summary": "TEXT",
+            "bet_timestamp": "TIMESTAMP",
+        }
+        for col_name, col_type in new_columns.items():
+            try:
+                cursor.execute(f"ALTER TABLE bets ADD COLUMN {col_name} {col_type}")
+                logger.info(f"Coluna '{col_name}' adicionada à tabela 'bets'.")
+            except sqlite3.OperationalError as e:
+                if "duplicate column name" in str(e):
+                    logger.info(f"Coluna '{col_name}' já existe na tabela 'bets'.")
+                else:
+                    logger.error(f"Erro ao adicionar coluna '{col_name}': {e}")
 
+        cursor.execute(
+            "CREATE TABLE IF NOT EXISTS processed_events (event_id INTEGER PRIMARY KEY, processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+        )
         cursor.execute("""
         CREATE TRIGGER IF NOT EXISTS update_bets_timestamp
-        AFTER UPDATE ON bets
-        FOR EACH ROW
+        AFTER UPDATE ON bets FOR EACH ROW
         BEGIN
-            UPDATE bets SET updated_at = CURRENT_TIMESTAMP
-            WHERE id = OLD.id;
-        END;
-        """)
-
+            UPDATE bets SET updated_at = CURRENT_TIMESTAMP WHERE id = OLD.id;
+        END;""")
         conn.commit()
         conn.close()
 
     def get_processed_event_ids(self):
         conn = sqlite3.connect(self.bets_db_path)
-        cursor = conn.cursor()
-
-        cursor.execute("SELECT event_id FROM processed_events")
-        processed_ids = {row[0] for row in cursor.fetchall()}
-
+        processed_ids = {
+            row[0]
+            for row in conn.cursor()
+            .execute("SELECT event_id FROM processed_events")
+            .fetchall()
+        }
         conn.close()
         return processed_ids
 
     def mark_event_processed(self, event_id):
         conn = sqlite3.connect(self.bets_db_path)
-        cursor = conn.cursor()
-
         try:
-            cursor.execute(
+            conn.cursor().execute(
                 "INSERT OR IGNORE INTO processed_events (event_id) VALUES (?)",
                 (event_id,),
             )
             conn.commit()
         except Exception as e:
             logger.error(f"Erro ao marcar evento {event_id}: {e}")
-
         conn.close()
 
     def get_all_upcoming_matches(self):
         conn = sqlite3.connect(self.tm_db_path)
         today = date.today()
         processed_events = self.get_processed_event_ids()
-
         upcoming_matches = []
-
-        for league_id, league_name in self.leagues.items():
+        for league_id in self.leagues.keys():
             if processed_events:
                 placeholders = ",".join("?" * len(processed_events))
-                query = f"""
-                SELECT id, league_name, home_team, away_team, time 
-                FROM events 
-                WHERE time_status = 0 AND league_id = ?
-                AND date(datetime(time, 'unixepoch')) >= date(?)
-                AND id NOT IN ({placeholders})
-                """
+                query = f"SELECT id, league_name, home_team, away_team, time FROM events WHERE time_status = 0 AND league_id = ? AND date(datetime(time, 'unixepoch')) >= date(?) AND id NOT IN ({placeholders})"
                 params = [league_id, today] + list(processed_events)
             else:
-                query = """
-                SELECT id, league_name, home_team, away_team, time 
-                FROM events 
-                WHERE time_status = 0 AND league_id = ?
-                AND date(datetime(time, 'unixepoch')) >= date(?)
-                """
+                query = "SELECT id, league_name, home_team, away_team, time FROM events WHERE time_status = 0 AND league_id = ? AND date(datetime(time, 'unixepoch')) >= date(?)"
                 params = [league_id, today]
-
             df = pd.read_sql_query(query, conn, params=params)
-
             for _, row in df.iterrows():
-                match = {
-                    "event_id": row["id"],
-                    "league_name": row["league_name"],
-                    "home_team": row["home_team"],
-                    "away_team": row["away_team"],
-                    "event_time": datetime.fromtimestamp(row["time"]),
-                }
-                upcoming_matches.append(match)
-
+                upcoming_matches.append(
+                    {
+                        "event_id": row["id"],
+                        "league_name": row["league_name"],
+                        "home_team": row["home_team"],
+                        "away_team": row["away_team"],
+                        "event_time": datetime.fromtimestamp(row["time"]),
+                    }
+                )
         conn.close()
         return upcoming_matches
 
     def get_match_odds(self, event_id):
         conn = sqlite3.connect(self.tm_db_path)
-
-        query = """
-        SELECT market_type, selection, odds, handicap_value
-        FROM match_odds 
-        WHERE event_id = ? 
-        AND market_type IN ('To Win', 'Total')
-        ORDER BY 
-            CASE WHEN selection = 'Home' THEN 1
-                 WHEN selection = 'Away' THEN 2
-                 WHEN selection LIKE 'Over%' THEN 3
-                 WHEN selection LIKE 'Under%' THEN 4
-                 ELSE 5 END
-        """
-
+        query = """SELECT market_type, selection, odds, handicap_value FROM match_odds WHERE event_id = ? AND market_type IN ('To Win', 'Total')"""
         df = pd.read_sql_query(query, conn, params=(event_id,))
         conn.close()
-
         return df
 
-    def get_player_last_matches(self, player_name, limit=20):
-        """Busca últimos jogos com peso decrescente por idade"""
-        conn = sqlite3.connect("table_tennis_results.db")
+    # --- LÓGICA DE OVER/UNDER ATUALIZADA ---
+    def get_player_last_matches_for_total(self, player_name, limit=20):
+        conn = sqlite3.connect(self.results_db_path)
+        query = "SELECT event_id, score FROM events WHERE (home_name = ? OR away_name = ?) ORDER BY event_time DESC LIMIT ?"
+        df = pd.read_sql_query(query, conn, params=(player_name, player_name, limit))
+        conn.close()
+        return df
 
+    def get_detailed_scores(self, event_id):
+        conn = sqlite3.connect(self.results_db_path)
+        df = pd.read_sql_query(
+            "SELECT set_number, home_score, away_score FROM event_scores WHERE event_id = ? ORDER BY set_number",
+            conn,
+            params=(event_id,),
+        )
+        conn.close()
+        return df
+
+    def get_games_per_match_list(self, player_name):
+        matches_df = self.get_player_last_matches_for_total(player_name)
+        games_list = []
+        for _, match in matches_df.iterrows():
+            detailed_scores = self.get_detailed_scores(match["event_id"])
+            total_games = (
+                detailed_scores["home_score"].sum()
+                + detailed_scores["away_score"].sum()
+            )
+            if total_games > 0:
+                games_list.append(total_games)
+        return games_list
+
+    def analyze_over_under_bet_filtered(
+        self, home_games, away_games, handicap_value, selection, odds_value
+    ):
+        decision_reason = "Aceita: ROI e Edge ok"
+        min_roi_ou = 0  # Variável para o ROI mínimo específico de O/U
+
+        # Permitir análise de Over e Under
+        if "Under" in selection:
+            home_count = sum(1 for g in home_games if g < handicap_value)
+            away_count = sum(1 for g in away_games if g < handicap_value)
+            # Lógica para Under
+            home_prob = home_count / len(home_games) if home_games else 0
+            away_prob = away_count / len(away_games) if away_games else 0
+            prob_diff = abs(home_prob - away_prob)
+            if prob_diff < 0.20:
+                if home_prob >= 0.60 and away_prob >= 0.60:
+                    est_prob = max(home_prob, away_prob)
+                    min_roi_ou = 15
+                elif home_prob <= 0.40 and away_prob <= 0.40:
+                    est_prob = (home_prob + away_prob) / 2
+                    min_roi_ou = 40
+                else:
+                    est_prob = (home_prob + away_prob) / 2
+                    min_roi_ou = 25
+            else:
+                est_prob = (home_prob + away_prob) / 2
+                min_roi_ou = 30
+        elif "Over" in selection:
+            home_count = sum(1 for g in home_games if g > handicap_value)
+            away_count = sum(1 for g in away_games if g > handicap_value)
+            # Lógica para Over (pode ser a mesma ou diferente da Under)
+            home_prob = home_count / len(home_games) if home_games else 0
+            away_prob = away_count / len(away_games) if away_games else 0
+            prob_diff = abs(home_prob - away_prob)
+            if prob_diff < 0.20:
+                if home_prob >= 0.60 and away_prob >= 0.60:
+                    est_prob = max(home_prob, away_prob)
+                    min_roi_ou = 15
+                elif home_prob <= 0.40 and away_prob <= 0.40:
+                    est_prob = (home_prob + away_prob) / 2
+                    min_roi_ou = 40
+                else:
+                    est_prob = (home_prob + away_prob) / 2
+                    min_roi_ou = 25
+            else:
+                est_prob = (home_prob + away_prob) / 2
+                min_roi_ou = 30
+        else:
+            decision_reason = "Rejeitada (Total): Tipo de aposta Total inválido"
+            logger.info(Fore.RED + f"❌ FILTRO FINAL: {decision_reason}")
+            return False, 0, 0, 0, 0, 0, decision_reason
+
+        roi = ((est_prob * (odds_value - 1)) - (1 - est_prob)) * 100
+        accept = roi >= min_roi_ou
+
+        if not accept:
+            decision_reason = f"Rejeitada (Total): ROI {roi:.2f}% abaixo do mínimo ({min_roi_ou}%) para O/U"
+            logger.info(Fore.RED + f"❌ FILTRO FINAL: {decision_reason}")
+
+        return accept, est_prob, roi, home_prob, away_prob, min_roi_ou, decision_reason
+
+    # --- FIM DA LÓGICA DE OVER/UNDER ---
+
+    def get_player_form_summary(self, player_name, limit=5):
+        """Gera um resumo simples da forma recente do jogador (W-L)."""
+        conn = sqlite3.connect(self.results_db_path)
         query = """
-        SELECT 
-            event_id, event_time, home_name, away_name, score
+        SELECT home_name, away_name, score
         FROM events 
-        WHERE (home_name = ? OR away_name = ?) 
+        WHERE (home_name = ? OR away_name = ?) AND time_status = 3
         ORDER BY event_time DESC 
         LIMIT ?
         """
-
         df = pd.read_sql_query(query, conn, params=(player_name, player_name, limit))
         conn.close()
 
-        return df
+        wins = 0
+        losses = 0
+        for _, row in df.iterrows():
+            if not row["score"] or "-" not in row["score"]:
+                continue
+            try:
+                home_score, away_score = map(int, row["score"].split("-"))
+                if row["home_name"] == player_name:
+                    if home_score > away_score:
+                        wins += 1
+                    else:
+                        losses += 1
+                else:
+                    if away_score > home_score:
+                        wins += 1
+                    else:
+                        losses += 1
+            except ValueError:
+                continue
+        return f"{wins}W-{losses}L nos últimos {len(df)} jogos"
 
-    def get_head_to_head_stats(self, player1, player2):
-        """Busca estatísticas de confrontos diretos"""
-        conn = sqlite3.connect("table_tennis_results.db")
-
+    def get_h2h_summary(self, player1, player2, limit=5):
+        """Gera um resumo simples do H2H (Player1 W-L vs Player2)."""
+        conn = sqlite3.connect(self.results_db_path)
         query = """
-        SELECT 
-            event_id, home_name, away_name, score, event_time
+        SELECT home_name, away_name, score
         FROM events 
-        WHERE ((home_name = ? AND away_name = ?) 
-               OR (home_name = ? AND away_name = ?))
-        AND time_status = 3
-        ORDER BY event_time DESC
-        LIMIT 10
+        WHERE ((home_name = ? AND away_name = ?) OR (home_name = ? AND away_name = ?)) AND time_status = 3
+        ORDER BY event_time DESC 
+        LIMIT ?
         """
-
-        df = pd.read_sql_query(query, conn, params=(player1, player2, player2, player1))
+        df = pd.read_sql_query(
+            query, conn, params=(player1, player2, player2, player1, limit)
+        )
         conn.close()
-
-        if df.empty:
-            return {
-                "total_matches": 0,
-                "player1_wins": 0,
-                "player2_wins": 0,
-                "win_rate_player1": 0,
-            }
 
         player1_wins = 0
         player2_wins = 0
-
         for _, row in df.iterrows():
-            score = row["score"]
-            if score and "-" in score:
-                try:
-                    home_score, away_score = map(int, score.split("-"))
-
-                    if row["home_name"] == player1:
-                        if home_score > away_score:
-                            player1_wins += 1
-                        else:
-                            player2_wins += 1
-                    else:
-                        if away_score > home_score:
-                            player1_wins += 1
-                        else:
-                            player2_wins += 1
-                except ValueError:
-                    continue
-
-        total_matches = len(df)
-        win_rate_player1 = player1_wins / total_matches if total_matches > 0 else 0
-
-        return {
-            "total_matches": total_matches,
-            "player1_wins": player1_wins,
-            "player2_wins": player2_wins,
-            "win_rate_player1": win_rate_player1,
-        }
-
-    def get_detailed_scores(self, event_id):
-        conn = sqlite3.connect("table_tennis_results.db")
-
-        query = """
-        SELECT set_number, home_score, away_score 
-        FROM event_scores 
-        WHERE event_id = ?
-        ORDER BY set_number
-        """
-
-        df = pd.read_sql_query(query, conn, params=(event_id,))
-        conn.close()
-
-        return df
-
-    def calculate_player_stats_weighted(self, player_name, matches_df):
-        """Calcula estatísticas com peso decrescente por idade"""
-        if matches_df.empty:
-            return {
-                "total_matches": 0,
-                "wins": 0,
-                "losses": 0,
-                "win_rate": 0,
-                "total_games_played": 0,
-                "avg_games_per_match": 0,
-                "games_per_match_list": [],
-                "weighted_win_rate": 0,
-            }
-
-        stats = {
-            "total_matches": 0,
-            "wins": 0,
-            "losses": 0,
-            "total_games_played": 0,
-            "games_per_match_list": [],
-            "weighted_wins": 0,
-            "weighted_total": 0,
-        }
-
-        for idx, match in matches_df.iterrows():
-            # Peso decrescente: jogos mais recentes têm mais peso
-            weight = 1.0 / (idx + 1)  # 1.0, 0.5, 0.33, 0.25, etc.
-
-            is_home = match["home_name"] == player_name
-            score = match["score"]
-
-            if not score or "-" not in score:
+            if not row["score"] or "-" not in row["score"]:
                 continue
-
             try:
-                home_score, away_score = map(int, score.split("-"))
+                home_score, away_score = map(int, row["score"].split("-"))
+                if row["home_name"] == player1:
+                    if home_score > away_score:
+                        player1_wins += 1
+                    else:
+                        player2_wins += 1
+                else:
+                    if away_score > home_score:
+                        player1_wins += 1
+                    else:
+                        player2_wins += 1
             except ValueError:
                 continue
-
-            stats["total_matches"] += 1
-            stats["weighted_total"] += weight
-
-            won = (is_home and home_score > away_score) or (
-                not is_home and away_score > home_score
-            )
-
-            if won:
-                stats["wins"] += 1
-                stats["weighted_wins"] += weight
-            else:
-                stats["losses"] += 1
-
-            # Calcular jogos totais
-            detailed_scores = self.get_detailed_scores(match["event_id"])
-            total_games = 0
-            for _, set_score in detailed_scores.iterrows():
-                total_games += set_score["home_score"] + set_score["away_score"]
-
-            if total_games > 0:
-                stats["games_per_match_list"].append(total_games)
-                stats["total_games_played"] += total_games
-
-        # Win rates
-        stats["win_rate"] = (
-            (stats["wins"] / stats["total_matches"])
-            if stats["total_matches"] > 0
-            else 0
+        return (
+            f"{player1_wins}W-{player2_wins}L vs {player2}"
+            if (player1_wins + player2_wins) > 0
+            else "N/A"
         )
-        stats["weighted_win_rate"] = (
-            (stats["weighted_wins"] / stats["weighted_total"])
-            if stats["weighted_total"] > 0
-            else 0
-        )
-
-        stats["avg_games_per_match"] = (
-            (stats["total_games_played"] / len(stats["games_per_match_list"]))
-            if stats["games_per_match_list"]
-            else 0
-        )
-
-        logger.info(
-            f"📊 {player_name}: {stats['wins']}W-{stats['losses']}L em {stats['total_matches']} jogos = {stats['win_rate']:.1f}% WR (Ponderado: {stats['weighted_win_rate']:.1f}%)"
-        )
-
-        return stats
-
-    def calculate_ml_probability_v2(
-        self, home_stats, away_stats, home_player, away_player
-    ):
-        """
-        Nova fórmula: Força Relativa + Confrontos Diretos
-        """
-        home_wr = home_stats["weighted_win_rate"]
-        away_wr = away_stats["weighted_win_rate"]
-
-        # Passo 1: Calcular força relativa (vs média da liga = 50%)
-        home_strength = home_wr - 0.5
-        away_strength = away_wr - 0.5
-        strength_diff = home_strength - away_strength
-
-        # Passo 2: Converter para probabilidade base
-        prob_base = 0.5 + (strength_diff * STRENGTH_SCALE_FACTOR)
-        prob_base = max(0.15, min(0.85, prob_base))  # Limita extremos
-
-        # Passo 3: Ajustar com confrontos diretos (se existirem)
-        h2h_stats = self.get_head_to_head_stats(home_player, away_player)
-        h2h_matches = h2h_stats["total_matches"]
-        h2h_weight = 0
-
-        if h2h_matches >= MIN_H2H_MATCHES:
-            h2h_weight = min(H2H_MAX_WEIGHT, h2h_matches * 0.1)
-            h2h_prob = h2h_stats["win_rate_player1"]  # player1 = home
-
-            # Combina probabilidade base com H2H
-            prob_final = (prob_base * (1 - h2h_weight)) + (h2h_prob * h2h_weight)
-        else:
-            prob_final = prob_base
-
-        # Garantir limites
-        prob_final = max(0.1, min(0.9, prob_final))
-
-        return prob_final, strength_diff, h2h_matches, h2h_weight
-
-    def analyze_ml_bet_v2(
-        self, home_stats, away_stats, home_player, away_player, selection, odds_value
-    ):
-        """
-        Nova análise ML com Força Relativa + Confrontos Diretos
-        """
-        prob_home, strength_diff, h2h_matches, h2h_weight = (
-            self.calculate_ml_probability_v2(
-                home_stats, away_stats, home_player, away_player
-            )
-        )
-
-        if selection == "Home":
-            est_prob = prob_home
-        else:
-            est_prob = 1 - prob_home
-
-        # Calcular métricas
-        implied_prob = 1 / odds_value
-        edge = est_prob - implied_prob
-        roi = ((est_prob * (odds_value - 1)) - (1 - est_prob)) * 100
-
-        # Critérios de aceitação mais rigorosos
-        accept_bet = (
-            roi >= MIN_ROI_ML
-            and edge >= MIN_EDGE
-            and home_stats["total_matches"] >= 5
-            and away_stats["total_matches"] >= 5
-        )
-
-        return accept_bet, est_prob, roi
-
-    def analyze_over_under_bet(
-        self, home_games, away_games, handicap_value, selection, odds_value
-    ):
-        """
-        Análise Over/Under (mantida igual)
-        """
-        if "Over" in selection:
-            home_count = sum(1 for g in home_games if g > handicap_value)
-            away_count = sum(1 for g in away_games if g > handicap_value)
-        else:
-            home_count = sum(1 for g in home_games if g < handicap_value)
-            away_count = sum(1 for g in away_games if g < handicap_value)
-
-        home_prob = home_count / len(home_games) if home_games else 0
-        away_prob = away_count / len(away_games) if away_games else 0
-
-        prob_diff = abs(home_prob - away_prob)
-
-        if prob_diff < 0.20:
-            if home_prob >= 0.60 and away_prob >= 0.60:
-                est_prob = max(home_prob, away_prob)
-                min_roi = 15
-            elif home_prob <= 0.40 and away_prob <= 0.40:
-                est_prob = (home_prob + away_prob) / 2
-                min_roi = 40
-            else:
-                est_prob = (home_prob + away_prob) / 2
-                min_roi = 25
-        else:
-            est_prob = (home_prob + away_prob) / 2
-            min_roi = 30
-
-        roi = ((est_prob * (odds_value - 1)) - (1 - est_prob)) * 100
-        accept = roi >= min_roi
-
-        return accept, est_prob, roi, home_prob, away_prob, min_roi
-
-    def filter_conflicting_bets(self, valuable_bets, home_player, away_player):
-        """Mantém lógica original de filtro de conflitos"""
-        home_bets = [
-            b
-            for b in valuable_bets
-            if b["bet_type"] == "To Win" and b["selection"] == "Home"
-        ]
-        away_bets = [
-            b
-            for b in valuable_bets
-            if b["bet_type"] == "To Win" and b["selection"] == "Away"
-        ]
-        other_bets = [b for b in valuable_bets if b["bet_type"] != "To Win"]
-
-        if not home_bets or not away_bets:
-            return valuable_bets
-
-        h2h_stats = self.get_head_to_head_stats(home_player, away_player)
-
-        if h2h_stats["total_matches"] > 0:
-            if h2h_stats["player1_wins"] > h2h_stats["player2_wins"]:
-                logger.info(
-                    f"H2H: {home_player} tem mais vitórias ({h2h_stats['player1_wins']} vs {h2h_stats['player2_wins']})"
-                )
-                return home_bets + other_bets
-            else:
-                logger.info(
-                    f"H2H: {away_player} tem mais vitórias ({h2h_stats['player2_wins']} vs {h2h_stats['player1_wins']})"
-                )
-                return away_bets + other_bets
-        else:
-            home_roi = max(b["estimated_roi"] for b in home_bets)
-            away_roi = max(b["estimated_roi"] for b in away_bets)
-
-            if home_roi > away_roi:
-                logger.info(
-                    f"ROI: Home tem maior ROI ({home_roi:.2f}% vs {away_roi:.2f}%)"
-                )
-                return home_bets + other_bets
-            else:
-                logger.info(
-                    f"ROI: Away tem maior ROI ({away_roi:.2f}% vs {home_roi:.2f}%)"
-                )
-                return away_bets + other_bets
 
     def analyze_bet_value(self, match, odds_df):
         home_player = match["home_team"]
         away_player = match["away_team"]
-
-        # Buscar mais jogos (20 ao invés de 10)
-        home_matches = self.get_player_last_matches(home_player, 20)
-        home_stats = self.calculate_player_stats_weighted(home_player, home_matches)
-
-        away_matches = self.get_player_last_matches(away_player, 20)
-        away_stats = self.calculate_player_stats_weighted(away_player, away_matches)
-
-        if home_stats["total_matches"] < 5 or away_stats["total_matches"] < 5:
-            logger.warning(
-                f"❌ DESCARTADO - Dados insuficientes: {home_player}({home_stats['total_matches']}) vs {away_player}({away_stats['total_matches']})"
-            )
-            return []
-
         valuable_bets = []
 
-        for _, row in odds_df.iterrows():
-            market = row["market_type"]
-            selection = row["selection"]
-            odds_value = row["odds"]
-            handicap = row["handicap_value"]
+        # Pega os ratings ELO pré-calculados (ou o padrão se for jogador novo)
+        home_rating = self.player_ratings.get(home_player, DEFAULT_ELO)
+        away_rating = self.player_ratings.get(away_player, DEFAULT_ELO)
 
+        # Obter resumos de forma e H2H para registro
+        player_form_home = self.get_player_form_summary(home_player)
+        player_form_away = self.get_player_form_summary(away_player)
+        h2h_summary = self.get_h2h_summary(home_player, away_player)
+
+        # Lógica para Over/Under ainda precisa dos jogos recentes
+        home_games_list = self.get_games_per_match_list(home_player)
+        away_games_list = self.get_games_per_match_list(away_player)
+
+        for _, row in odds_df.iterrows():
+            market, selection, odds_value, handicap = (
+                row["market_type"],
+                row["selection"],
+                row["odds"],
+                row["handicap_value"],
+            )
             if odds_value <= 1.01:
                 continue
 
-            handicap_value = None
-            if market == "Total" and handicap:
+            bet_data = {
+                "event_id": match["event_id"],
+                "league_name": match["league_name"],
+                "home_team": home_player,
+                "away_team": away_player,
+                "event_time": match["event_time"],
+                "bet_type": market,
+                "selection": selection,
+                "handicap": None,
+                "odds": odds_value,
+                "fair_odds": 0,  # Será preenchido
+                "estimated_roi": 0,  # Será preenchido
+                "home_elo_at_bet": home_rating,
+                "away_elo_at_bet": away_rating,
+                "elo_prob_home": None,  # Será preenchido para ML
+                "implied_prob": 1 / odds_value,
+                "bet_edge": None,  # Será preenchido
+                "min_roi_required": None,  # Será preenchido
+                "bet_decision_reason": "",  # Será preenchido
+                "player_form_home": player_form_home,
+                "player_form_away": player_form_away,
+                "h2h_summary": h2h_summary,
+                "bet_timestamp": datetime.now(),
+            }
+
+            if market == "To Win":
+                accept_bet, est_prob, estimated_roi, edge, decision_reason = (
+                    self.analyze_ml_bet_elo(
+                        home_rating, away_rating, selection, odds_value
+                    )
+                )
+                bet_data.update(
+                    {
+                        "fair_odds": 1 / est_prob if est_prob > 0 else 0,
+                        "estimated_roi": estimated_roi,
+                        "elo_prob_home": self._get_expected_score(
+                            home_rating, away_rating
+                        ),
+                        "bet_edge": edge,
+                        "min_roi_required": MIN_ROI_ML,
+                        "bet_decision_reason": decision_reason,
+                    }
+                )
+                if accept_bet:
+                    valuable_bets.append(bet_data)
+
+            elif market == "Total" and handicap:
                 try:
                     handicap_value = float(handicap.replace("O ", "").replace("U ", ""))
                 except ValueError:
-                    handicap_value = None
+                    continue
 
-            if market == "To Win":
-                accept_bet, est_prob, estimated_roi = self.analyze_ml_bet_v2(
-                    home_stats,
-                    away_stats,
-                    home_player,
-                    away_player,
+                (
+                    accept_bet,
+                    est_prob,
+                    estimated_roi,
+                    home_prob,
+                    away_prob,
+                    min_roi_ou,
+                    decision_reason,
+                ) = self.analyze_over_under_bet_filtered(
+                    home_games_list,
+                    away_games_list,
+                    handicap_value,
                     selection,
                     odds_value,
                 )
-
-                log_message = (
-                    f"ML V2 - {selection}: {home_player}({home_stats['weighted_win_rate']:.1f}%) vs {away_player}({away_stats['weighted_win_rate']:.1f}%) | "
-                    f"Odds: {odds_value:.2f} | "
-                    f"Est Prob: {est_prob:.3f} | "
-                    f"Edge: {est_prob - (1 / odds_value):.3f} | "
-                    f"ROI: {estimated_roi:.2f}%"
+                bet_data.update(
+                    {
+                        "handicap": handicap_value,
+                        "fair_odds": 1 / est_prob if est_prob > 0 else 0,
+                        "estimated_roi": estimated_roi,
+                        "min_roi_required": min_roi_ou,
+                        "bet_decision_reason": decision_reason,
+                    }
                 )
-
                 if accept_bet:
-                    logger.info(Fore.GREEN + f"✅ APROVADA: {log_message}")
-                    valuable_bets.append(
-                        {
-                            "event_id": match["event_id"],
-                            "league_name": match["league_name"],
-                            "home_team": home_player,
-                            "away_team": away_player,
-                            "event_time": match["event_time"],
-                            "bet_type": market,
-                            "selection": selection,
-                            "handicap": None,
-                            "odds": odds_value,
-                            "fair_odds": 1 / est_prob if est_prob > 0 else 0,
-                            "estimated_roi": estimated_roi,
-                        }
-                    )
-                else:
-                    logger.info(Fore.RED + f"❌ REJEITADA: {log_message}")
-
-            elif market == "Total" and handicap_value is not None:
-                home_games = home_stats["games_per_match_list"]
-                away_games = away_stats["games_per_match_list"]
-
-                accept_bet, est_prob, estimated_roi, home_prob, away_prob, min_roi = (
-                    self.analyze_over_under_bet(
-                        home_games, away_games, handicap_value, selection, odds_value
-                    )
-                )
-
-                prob_label = "Over%" if "Over" in selection else "Under%"
-                log_message = (
-                    f"Total - {selection} {handicap_value}: {home_player} vs {away_player} | "
-                    f"Odds: {odds_value:.2f} | "
-                    f"Home {prob_label}: {home_prob:.3f} | "
-                    f"Away {prob_label}: {away_prob:.3f} | "
-                    f"Est Prob: {est_prob:.3f} | "
-                    f"ROI: {estimated_roi:.2f}% | "
-                    f"Min ROI: {min_roi}%"
-                )
-
-                if accept_bet:
-                    logger.info(Fore.GREEN + f"✅ APROVADA: {log_message}")
-                    valuable_bets.append(
-                        {
-                            "event_id": match["event_id"],
-                            "league_name": match["league_name"],
-                            "home_team": home_player,
-                            "away_team": away_player,
-                            "event_time": match["event_time"],
-                            "bet_type": market,
-                            "selection": selection,
-                            "handicap": handicap_value,
-                            "odds": odds_value,
-                            "fair_odds": 1 / est_prob if est_prob > 0 else 0,
-                            "estimated_roi": estimated_roi,
-                        }
-                    )
-                else:
-                    logger.info(Fore.RED + f"❌ REJEITADA: {log_message}")
-
-        return self.filter_conflicting_bets(valuable_bets, home_player, away_player)
+                    valuable_bets.append(bet_data)
+        return valuable_bets
 
     def save_top_bets_by_league(self, all_bets):
-        """Mantém estrutura original do banco - SEM NOVAS COLUNAS"""
+        """Salva as apostas no banco de dados, incluindo os novos campos."""
         if not all_bets:
             return 0
-
-        bets_by_league_date = {}
-        for bet in all_bets:
-            event_date = bet["event_time"].date()
-            league = bet["league_name"]
-            key = (league, event_date)
-
-            if key not in bets_by_league_date:
-                bets_by_league_date[key] = []
-            bets_by_league_date[key].append(bet)
-
         conn = sqlite3.connect(self.bets_db_path)
         cursor = conn.cursor()
-
         total_saved = 0
-
-        for (league_name, event_date), league_bets in bets_by_league_date.items():
-            ml_bets = [b for b in league_bets if b["bet_type"] == "To Win"]
-            ou_bets = [b for b in league_bets if b["bet_type"] == "Total"]
-
-            ml_bets.sort(key=lambda x: x["estimated_roi"], reverse=True)
-            ou_bets.sort(key=lambda x: x["estimated_roi"], reverse=True)
-
-            top_ml = ml_bets[:20]
-            top_ou = ou_bets[:20]
-
-            top_bets = top_ml + top_ou
-
-            logger.info(
-                f"Liga {league_name} - {event_date}: {len(ml_bets)} ML candidatas → {len(top_ml)} salvando"
-            )
-            logger.info(
-                f"Liga {league_name} - {event_date}: {len(ou_bets)} O/U candidatas → {len(top_ou)} salvando"
-            )
-
-            for bet in top_bets:
-                try:
-                    # ESTRUTURA ORIGINAL - SEM NOVAS COLUNAS
-                    cursor.execute(
-                        """
-                    INSERT OR REPLACE INTO bets 
-                    (event_id, league_name, home_team, away_team, event_time, 
-                     bet_type, selection, handicap, odds, fair_odds, estimated_roi)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                        (
-                            bet["event_id"],
-                            bet["league_name"],
-                            bet["home_team"],
-                            bet["away_team"],
-                            bet["event_time"],
-                            bet["bet_type"],
-                            bet["selection"],
-                            bet["handicap"],
-                            bet["odds"],
-                            bet["fair_odds"],
-                            bet["estimated_roi"],
-                        ),
+        for bet in all_bets:
+            try:
+                cursor.execute(
+                    """
+                INSERT OR REPLACE INTO bets 
+                (event_id, league_name, home_team, away_team, event_time, 
+                 bet_type, selection, handicap, odds, fair_odds, estimated_roi,
+                 home_elo_at_bet, away_elo_at_bet, elo_prob_home, implied_prob, bet_edge,
+                 min_roi_required, bet_decision_reason, player_form_home, player_form_away,
+                 h2h_summary, bet_timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                    (
+                        bet["event_id"],
+                        bet["league_name"],
+                        bet["home_team"],
+                        bet["away_team"],
+                        bet["event_time"],
+                        bet["bet_type"],
+                        bet["selection"],
+                        bet["handicap"],
+                        bet["odds"],
+                        bet["fair_odds"],
+                        bet["estimated_roi"],
+                        bet["home_elo_at_bet"],
+                        bet["away_elo_at_bet"],
+                        bet["elo_prob_home"],
+                        bet["implied_prob"],
+                        bet["bet_edge"],
+                        bet["min_roi_required"],
+                        bet["bet_decision_reason"],
+                        bet["player_form_home"],
+                        bet["player_form_away"],
+                        bet["h2h_summary"],
+                        bet["bet_timestamp"],
+                    ),
+                )
+                if cursor.rowcount > 0:
+                    total_saved += 1
+                    logger.info(
+                        Fore.GREEN
+                        + f"💾 SALVA: {bet['bet_type']} {bet['selection']} @ {bet['odds']:.2f} (ROI: {bet['estimated_roi']:.2f}%) - Razão: {bet['bet_decision_reason']}"
                     )
-                    if cursor.rowcount > 0:
-                        total_saved += 1
-                        logger.info(
-                            Fore.GREEN
-                            + f"💾 SALVA: {bet['bet_type']} {bet['selection']} @ {bet['odds']:.2f} (ROI: {bet['estimated_roi']:.2f}%)"
-                        )
-                except sqlite3.Error as e:
-                    logger.error(f"Erro ao salvar aposta: {e}")
-
+            except sqlite3.Error as e:
+                logger.error(f"Erro ao salvar aposta: {e}")
         conn.commit()
         conn.close()
         return total_saved
 
     def process_all_matches(self):
-        logger.info("🚀 Iniciando processamento com NOVA LÓGICA V2...")
         logger.info(
-            f"📊 Parâmetros: MIN_ROI_ML={MIN_ROI_ML}%, MIN_EDGE={MIN_EDGE}, STRENGTH_SCALE={STRENGTH_SCALE_FACTOR}"
+            "🚀 Iniciando processamento com MODELO ELO e registro de dados expandido..."
         )
-
+        logger.info(
+            f"📊 Parâmetros: K_FACTOR={K_FACTOR}, DEFAULT_ELO={DEFAULT_ELO}, MIN_ROI_ML={MIN_ROI_ML}%, MIN_EDGE={MIN_EDGE}"
+        )
+        logger.info(
+            f"📊 Refinamento ML: ELO_DIFFERENCE_STRONG_FAVORITE={ELO_DIFFERENCE_STRONG_FAVORITE}, EDGE_MULTIPLIER_STRONG_FAVORITE={EDGE_MULTIPLIER_STRONG_FAVORITE}"
+        )
         upcoming_matches = self.get_all_upcoming_matches()
         logger.info(f"Jogos não processados para analisar: {len(upcoming_matches)}")
-
         if not upcoming_matches:
             logger.info("Nenhum jogo novo para processar.")
             return
 
         all_valuable_bets = []
-        processed_events = []
-
         for match in upcoming_matches:
             try:
                 event_id = match["event_id"]
                 logger.info(
-                    f"Analisando evento {event_id}: {match['home_team']} vs {match['away_team']} ({match['league_name']})"
+                    f"Analisando evento {event_id}: {match['home_team']} vs {match['away_team']}"
                 )
-
                 odds_df = self.get_match_odds(event_id)
-                logger.info(f"Encontradas {len(odds_df)} odds para este evento")
-
                 if not odds_df.empty:
                     valuable_bets = self.analyze_bet_value(match, odds_df)
-                    if valuable_bets:
-                        logger.info(
-                            f"Encontradas {len(valuable_bets)} apostas valiosas neste evento"
-                        )
-                        all_valuable_bets.extend(valuable_bets)
-                    else:
-                        logger.info("Nenhuma aposta valiosa encontrada neste evento")
-                else:
-                    logger.warning("Nenhuma odd disponível para este evento")
-
+                    all_valuable_bets.extend(valuable_bets)
                 self.mark_event_processed(event_id)
-                processed_events.append(event_id)
-
             except Exception as e:
-                logger.error(f"Erro ao processar evento {match['event_id']}: {e}")
-                self.mark_event_processed(match["event_id"])
+                logger.error(
+                    f"Erro fatal ao processar evento {match.get('event_id', 'N/A')}: {e}"
+                )
+                if "event_id" in match:
+                    self.mark_event_processed(match["event_id"])
 
         total_saved = self.save_top_bets_by_league(all_valuable_bets)
-
-        logger.info(f"✅ Processamento V2 concluído.")
-        logger.info(f"Eventos processados: {len(processed_events)}")
-        logger.info(f"Total de apostas valiosas encontradas: {len(all_valuable_bets)}")
-        logger.info(f"Total de apostas salvas: {total_saved}")
-
-        if len(processed_events) > 0:
-            logger.info("🔄 Sistema pode rodar novamente para capturar novos eventos!")
+        logger.info(f"✅ Processamento ELO concluído. {total_saved} apostas salvas.")
 
 
 def main():

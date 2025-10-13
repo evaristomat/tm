@@ -64,7 +64,7 @@ class TelegramBetNotifier:
             f"Total apostas: {debug_df.iloc[0]['total_bets']}, Já enviadas: {sent_df.iloc[0]['sent_count']}"
         )
 
-        # Buscar apostas não enviadas (todas, sem filtro de horário)
+        # Buscar apostas não enviadas (apenas Total)
         query = """
         SELECT 
             b.id, b.league_name, b.home_team, b.away_team, 
@@ -72,14 +72,14 @@ class TelegramBetNotifier:
             b.odds, b.estimated_roi
         FROM bets b
         LEFT JOIN telegram_sent_bets t ON b.id = t.bet_id
-        WHERE t.bet_id IS NULL
+        WHERE t.bet_id IS NULL AND b.bet_type = 'Total'
         ORDER BY b.league_name, b.event_time ASC
         """
 
         df = pd.read_sql_query(query, conn)
 
         if not df.empty:
-            logger.info(f"Apostas não enviadas encontradas: {len(df)}")
+            logger.info(f"Apostas Over/Under não enviadas encontradas: {len(df)}")
 
         conn.close()
         return df
@@ -98,7 +98,7 @@ class TelegramBetNotifier:
         conn.close()
 
     def get_profit_summary(self):
-        """Busca resumo de lucros por liga"""
+        """Busca resumo de lucros por liga, focado em O/U"""
         conn = sqlite3.connect(self.bets_db_path)
 
         query = """
@@ -108,14 +108,14 @@ class TelegramBetNotifier:
             COUNT(CASE WHEN result IS NOT NULL THEN 1 END) as total_bets,
             COUNT(CASE WHEN result = 1 THEN 1 END) as wins,
             COUNT(CASE WHEN result = 0 THEN 1 END) as losses,
-            SUM(CASE WHEN bet_type = 'To Win' AND result = 1 THEN profit 
-                     WHEN bet_type = 'To Win' AND result = 0 THEN -1 ELSE 0 END) as ml_profit,
-            COUNT(CASE WHEN bet_type = 'To Win' AND result IS NOT NULL THEN 1 END) as ml_total,
-            SUM(CASE WHEN bet_type = 'Total' AND result = 1 THEN profit 
-                     WHEN bet_type = 'Total' AND result = 0 THEN -1 ELSE 0 END) as ou_profit,
-            COUNT(CASE WHEN bet_type = 'Total' AND result IS NOT NULL THEN 1 END) as ou_total
+            SUM(CASE WHEN bet_type = 'Total' AND selection LIKE 'Over%' AND result = 1 THEN profit 
+                     WHEN bet_type = 'Total' AND selection LIKE 'Over%' AND result = 0 THEN -1 ELSE 0 END) as over_profit,
+            COUNT(CASE WHEN bet_type = 'Total' AND selection LIKE 'Over%' AND result IS NOT NULL THEN 1 END) as over_total,
+            SUM(CASE WHEN bet_type = 'Total' AND selection LIKE 'Under%' AND result = 1 THEN profit 
+                     WHEN bet_type = 'Total' AND selection LIKE 'Under%' AND result = 0 THEN -1 ELSE 0 END) as under_profit,
+            COUNT(CASE WHEN bet_type = 'Total' AND selection LIKE 'Under%' AND result IS NOT NULL THEN 1 END) as under_total
         FROM bets
-        WHERE result IS NOT NULL
+        WHERE result IS NOT NULL AND bet_type = 'Total'
         GROUP BY league_name
         ORDER BY total_profit DESC
         """
@@ -125,7 +125,7 @@ class TelegramBetNotifier:
         return df
 
     def format_bet_messages(self, league_bets):
-        """Formata mensagens de apostas por liga, dividindo se necessário"""
+        """Formata mensagens de apostas por liga, dividindo se necessário (apenas O/U)"""
         league_name = league_bets.iloc[0]["league_name"]
 
         league_icons = {
@@ -133,38 +133,27 @@ class TelegramBetNotifier:
             "TT Elite Series": "⭐",
             "Challenger Series TT": "🏓",
             "TT Cup": "🏆",
+            "Setka Cup": "🇺🇦",  # Adicionado ícone para Setka Cup
+            "Setka Cup Women": "♀️🇺🇦",  # Adicionado ícone para Setka Cup Women
         }
 
         icon = league_icons.get(league_name, "🏓")
         header = f"{icon} *{league_name}*\n"
         header += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
 
-        # Agrupar por tipo de aposta
-        ml_bets = league_bets[league_bets["bet_type"] == "To Win"]
-        ou_bets = league_bets[league_bets["bet_type"] == "Total"]
-
         messages = []
         current_message = header
 
-        def format_bet_section(bets, section_title):
+        def format_ou_section(bets, section_title):
             if bets.empty:
                 return ""
 
-            # Ordenar por data
             bets_sorted = bets.sort_values("event_time")
 
             section = f"{section_title}\n"
             for _, bet in bets_sorted.iterrows():
                 time_str = pd.to_datetime(bet["event_time"]).strftime("%d/%m %H:%M")
-
-                if bet["bet_type"] == "To Win":
-                    tip = (
-                        bet["home_team"]
-                        if bet["selection"] == "Home"
-                        else bet["away_team"]
-                    )
-                else:
-                    tip = f"{bet['selection']} {bet['handicap']:.1f}"
+                tip = f"{bet['selection']} {bet['handicap']:.1f}"
 
                 section += f"🆚 {bet['home_team']} vs {bet['away_team']}\n"
                 section += f"🎯 {tip} | 📊 {bet['odds']:.2f} | ⏰ {time_str}\n"
@@ -172,46 +161,9 @@ class TelegramBetNotifier:
 
             return section
 
-        # Processar ML bets
-        if not ml_bets.empty:
-            ml_section = format_bet_section(ml_bets, "💰 *MONEY LINE*")
-
-            if len(current_message + ml_section) > self.MAX_MESSAGE_LENGTH:
-                # Dividir ML bets
-                temp_section = "💰 *MONEY LINE*\n"
-                ml_sorted = ml_bets.sort_values("event_time")
-                for _, bet in ml_sorted.iterrows():
-                    time_str = pd.to_datetime(bet["event_time"]).strftime("%d/%m %H:%M")
-                    tip = (
-                        bet["home_team"]
-                        if bet["selection"] == "Home"
-                        else bet["away_team"]
-                    )
-
-                    bet_text = f"🆚 {bet['home_team']} vs {bet['away_team']}\n"
-                    bet_text += f"🎯 {tip} | 📊 {bet['odds']:.2f} | ⏰ {time_str}\n"
-                    bet_text += f"📈 ROI: {bet['estimated_roi']:.1f}%\n\n"
-
-                    if (
-                        len(current_message + temp_section + bet_text)
-                        > self.MAX_MESSAGE_LENGTH
-                    ):
-                        if temp_section != "💰 *MONEY LINE*\n":
-                            current_message += temp_section
-                            messages.append(current_message)
-                            current_message = header
-                            temp_section = "💰 *MONEY LINE*\n"
-
-                    temp_section += bet_text
-
-                if temp_section != "💰 *MONEY LINE*\n":
-                    current_message += temp_section
-            else:
-                current_message += ml_section
-
         # Processar OU bets
-        if not ou_bets.empty:
-            ou_section = format_bet_section(ou_bets, "🔢 *OVER/UNDER*")
+        if not league_bets.empty:
+            ou_section = format_ou_section(league_bets, "🔢 *OVER/UNDER*")
 
             if len(current_message + ou_section) > self.MAX_MESSAGE_LENGTH:
                 # Finalizar mensagem atual se tiver conteúdo
@@ -221,7 +173,7 @@ class TelegramBetNotifier:
 
                 # Dividir OU bets
                 temp_section = "🔢 *OVER/UNDER*\n"
-                ou_sorted = ou_bets.sort_values("event_time")
+                ou_sorted = league_bets.sort_values("event_time")
                 for _, bet in ou_sorted.iterrows():
                     time_str = pd.to_datetime(bet["event_time"]).strftime("%d/%m %H:%M")
                     tip = f"{bet['selection']} {bet['handicap']:.1f}"
@@ -254,15 +206,19 @@ class TelegramBetNotifier:
         return messages
 
     def format_profit_message(self, profit_data):
-        """Formata mensagem de resumo de lucros"""
+        """Formata mensagem de resumo de lucros (apenas O/U)"""
         if profit_data.empty:
-            return "📊 *RESUMO DE LUCROS*\n\nNenhum dado disponível ainda."
+            return "📊 *RESUMO DE LUCROS O/U*\n\nNenhum dado disponível ainda."
 
-        message = "💰 *RESUMO DE LUCROS*\n"
+        message = "💰 *RESUMO DE LUCROS O/U*\n"
         message += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
 
-        total_profit = 0
-        total_bets = 0
+        total_profit_overall = 0
+        total_bets_overall = 0
+        total_over_bets_overall = 0
+        total_under_bets_overall = 0
+        total_over_profit_overall = 0
+        total_under_profit_overall = 0
 
         for _, row in profit_data.iterrows():
             roi = (
@@ -274,20 +230,30 @@ class TelegramBetNotifier:
 
             message += f"🏓 *{row['league_name']}*\n"
             message += f"{status} {row['total_profit']:+.2f}u | ROI: {roi:+.1f}% | {row['wins']}W-{row['losses']}L\n"
-            message += f"├ ML: {row['ml_profit']:+.2f}u ({row['ml_total']} apostas)\n"
             message += (
-                f"└ O/U: {row['ou_profit']:+.2f}u ({row['ou_total']} apostas)\n\n"
+                f"├ Over: {row['over_profit']:+.2f}u ({row['over_total']} apostas)\n"
             )
+            message += f"└ Under: {row['under_profit']:+.2f}u ({row['under_total']} apostas)\n\n"
 
-            total_profit += row["total_profit"]
-            total_bets += row["total_bets"]
+            total_profit_overall += row["total_profit"]
+            total_bets_overall += row["total_bets"]
+            total_over_bets_overall += row["over_total"]
+            total_under_bets_overall += row["under_total"]
+            total_over_profit_overall += row["over_profit"]
+            total_under_profit_overall += row["under_profit"]
 
-        total_roi = (total_profit / total_bets * 100) if total_bets > 0 else 0
-        total_status = "✅" if total_profit > 0 else "❌"
+        total_roi_overall = (
+            (total_profit_overall / total_bets_overall * 100)
+            if total_bets_overall > 0
+            else 0
+        )
+        total_status_overall = "✅" if total_profit_overall > 0 else "❌"
 
         message += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        message += f"📊 *TOTAL GERAL*\n"
-        message += f"{total_status} {total_profit:+.2f}u | ROI: {total_roi:+.1f}%"
+        message += f"📊 *TOTAL GERAL O/U*\n"
+        message += f"{total_status_overall} {total_profit_overall:+.2f}u | ROI: {total_roi_overall:+.1f}% | {total_bets_overall} apostas\n"
+        message += f"├ Total Over: {total_over_profit_overall:+.2f}u ({total_over_bets_overall} apostas)\n"
+        message += f"└ Total Under: {total_under_profit_overall:+.2f}u ({total_under_bets_overall} apostas)"
 
         return message
 

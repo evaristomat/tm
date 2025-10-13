@@ -25,6 +25,7 @@ class TelegramBetNotifier:
         self.bot_token = bot_token or os.getenv("TELEGRAM_BOT_TOKEN")
         self.chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID")
         self.bets_db_path = bets_db_path
+        self.MAX_MESSAGE_LENGTH = 4096  # Limite do Telegram
 
         if not self.bot_token or not self.chat_id:
             raise ValueError("TELEGRAM_BOT_TOKEN e TELEGRAM_CHAT_ID são obrigatórios!")
@@ -72,7 +73,7 @@ class TelegramBetNotifier:
         FROM bets b
         LEFT JOIN telegram_sent_bets t ON b.id = t.bet_id
         WHERE t.bet_id IS NULL
-        ORDER BY b.league_name, b.estimated_roi DESC
+        ORDER BY b.league_name, b.event_time ASC
         """
 
         df = pd.read_sql_query(query, conn)
@@ -123,8 +124,8 @@ class TelegramBetNotifier:
         conn.close()
         return df
 
-    def format_bet_message(self, league_bets):
-        """Formata mensagem de apostas por liga"""
+    def format_bet_messages(self, league_bets):
+        """Formata mensagens de apostas por liga, dividindo se necessário"""
         league_name = league_bets.iloc[0]["league_name"]
 
         league_icons = {
@@ -135,36 +136,122 @@ class TelegramBetNotifier:
         }
 
         icon = league_icons.get(league_name, "🏓")
-        message = f"{icon} *{league_name}*\n"
-        message += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        header = f"{icon} *{league_name}*\n"
+        header += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
 
         # Agrupar por tipo de aposta
         ml_bets = league_bets[league_bets["bet_type"] == "To Win"]
         ou_bets = league_bets[league_bets["bet_type"] == "Total"]
 
+        messages = []
+        current_message = header
+
+        def format_bet_section(bets, section_title):
+            if bets.empty:
+                return ""
+
+            # Ordenar por data
+            bets_sorted = bets.sort_values("event_time")
+
+            section = f"{section_title}\n"
+            for _, bet in bets_sorted.iterrows():
+                time_str = pd.to_datetime(bet["event_time"]).strftime("%d/%m %H:%M")
+
+                if bet["bet_type"] == "To Win":
+                    tip = (
+                        bet["home_team"]
+                        if bet["selection"] == "Home"
+                        else bet["away_team"]
+                    )
+                else:
+                    tip = f"{bet['selection']} {bet['handicap']:.1f}"
+
+                section += f"🆚 {bet['home_team']} vs {bet['away_team']}\n"
+                section += f"🎯 {tip} | 📊 {bet['odds']:.2f} | ⏰ {time_str}\n"
+                section += f"📈 ROI: {bet['estimated_roi']:.1f}%\n\n"
+
+            return section
+
+        # Processar ML bets
         if not ml_bets.empty:
-            message += "💰 *MONEY LINE*\n"
-            for _, bet in ml_bets.iterrows():
-                time_str = pd.to_datetime(bet["event_time"]).strftime("%d/%m %H:%M")
-                tip = (
-                    bet["home_team"] if bet["selection"] == "Home" else bet["away_team"]
-                )
+            ml_section = format_bet_section(ml_bets, "💰 *MONEY LINE*")
 
-                message += f"🆚 {bet['home_team']} vs {bet['away_team']}\n"
-                message += f"🎯 {tip} | 📊 {bet['odds']:.2f} | ⏰ {time_str}\n"
-                message += f"📈 ROI: {bet['estimated_roi']:.1f}%\n\n"
+            if len(current_message + ml_section) > self.MAX_MESSAGE_LENGTH:
+                # Dividir ML bets
+                temp_section = "💰 *MONEY LINE*\n"
+                ml_sorted = ml_bets.sort_values("event_time")
+                for _, bet in ml_sorted.iterrows():
+                    time_str = pd.to_datetime(bet["event_time"]).strftime("%d/%m %H:%M")
+                    tip = (
+                        bet["home_team"]
+                        if bet["selection"] == "Home"
+                        else bet["away_team"]
+                    )
 
+                    bet_text = f"🆚 {bet['home_team']} vs {bet['away_team']}\n"
+                    bet_text += f"🎯 {tip} | 📊 {bet['odds']:.2f} | ⏰ {time_str}\n"
+                    bet_text += f"📈 ROI: {bet['estimated_roi']:.1f}%\n\n"
+
+                    if (
+                        len(current_message + temp_section + bet_text)
+                        > self.MAX_MESSAGE_LENGTH
+                    ):
+                        if temp_section != "💰 *MONEY LINE*\n":
+                            current_message += temp_section
+                            messages.append(current_message)
+                            current_message = header
+                            temp_section = "💰 *MONEY LINE*\n"
+
+                    temp_section += bet_text
+
+                if temp_section != "💰 *MONEY LINE*\n":
+                    current_message += temp_section
+            else:
+                current_message += ml_section
+
+        # Processar OU bets
         if not ou_bets.empty:
-            message += "🔢 *OVER/UNDER*\n"
-            for _, bet in ou_bets.iterrows():
-                time_str = pd.to_datetime(bet["event_time"]).strftime("%d/%m %H:%M")
-                tip = f"{bet['selection']} {bet['handicap']:.1f}"
+            ou_section = format_bet_section(ou_bets, "🔢 *OVER/UNDER*")
 
-                message += f"🆚 {bet['home_team']} vs {bet['away_team']}\n"
-                message += f"🎯 {tip} | 📊 {bet['odds']:.2f} | ⏰ {time_str}\n"
-                message += f"📈 ROI: {bet['estimated_roi']:.1f}%\n\n"
+            if len(current_message + ou_section) > self.MAX_MESSAGE_LENGTH:
+                # Finalizar mensagem atual se tiver conteúdo
+                if len(current_message) > len(header):
+                    messages.append(current_message)
+                    current_message = header
 
-        return message
+                # Dividir OU bets
+                temp_section = "🔢 *OVER/UNDER*\n"
+                ou_sorted = ou_bets.sort_values("event_time")
+                for _, bet in ou_sorted.iterrows():
+                    time_str = pd.to_datetime(bet["event_time"]).strftime("%d/%m %H:%M")
+                    tip = f"{bet['selection']} {bet['handicap']:.1f}"
+
+                    bet_text = f"🆚 {bet['home_team']} vs {bet['away_team']}\n"
+                    bet_text += f"🎯 {tip} | 📊 {bet['odds']:.2f} | ⏰ {time_str}\n"
+                    bet_text += f"📈 ROI: {bet['estimated_roi']:.1f}%\n\n"
+
+                    if (
+                        len(current_message + temp_section + bet_text)
+                        > self.MAX_MESSAGE_LENGTH
+                    ):
+                        if temp_section != "🔢 *OVER/UNDER*\n":
+                            current_message += temp_section
+                            messages.append(current_message)
+                            current_message = header
+                            temp_section = "🔢 *OVER/UNDER*\n"
+
+                    temp_section += bet_text
+
+                if temp_section != "🔢 *OVER/UNDER*\n":
+                    current_message += temp_section
+            else:
+                current_message += ou_section
+
+        # Adicionar última mensagem
+        if len(current_message) > len(header):
+            messages.append(current_message)
+
+        return messages
 
     def format_profit_message(self, profit_data):
         """Formata mensagem de resumo de lucros"""
@@ -230,15 +317,26 @@ class TelegramBetNotifier:
 
         for league in new_bets["league_name"].unique():
             league_bets = new_bets[new_bets["league_name"] == league]
-            message = self.format_bet_message(league_bets)
+            messages = self.format_bet_messages(league_bets)
 
-            if await self.send_message(message):
+            league_success = True
+            for i, message in enumerate(messages):
+                if await self.send_message(message):
+                    logger.info(
+                        f"✅ Enviada parte {i + 1}/{len(messages)} da liga {league}"
+                    )
+                    await asyncio.sleep(1)
+                else:
+                    logger.error(f"❌ Falha ao enviar parte {i + 1} da liga {league}")
+                    league_success = False
+                    break
+
+            if league_success:
                 sent_bet_ids.extend(league_bets["id"].tolist())
                 sent_count += len(league_bets)
-                logger.info(f"✅ Enviadas {len(league_bets)} apostas da liga {league}")
-                await asyncio.sleep(1)
-            else:
-                logger.error(f"❌ Falha ao enviar apostas da liga {league}")
+                logger.info(
+                    f"✅ Todas as {len(league_bets)} apostas da liga {league} enviadas"
+                )
 
         if sent_bet_ids:
             self.mark_bets_as_sent(sent_bet_ids)

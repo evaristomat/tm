@@ -100,15 +100,14 @@ class TelegramBetNotifier:
 
         query = """
         SELECT 
-            league_name,
-            SUM(CASE WHEN result = 1 THEN profit WHEN result = 0 THEN -1 ELSE 0 END) as total_profit,
-            COUNT(CASE WHEN result IS NOT NULL THEN 1 END) as total_bets,
-            COUNT(CASE WHEN result = 1 THEN 1 END) as wins,
-            COUNT(CASE WHEN result = 0 THEN 1 END) as losses
+            result,
+            profit,
+            handicap,
+            estimated_roi,
+            bet_edge,
+            league_name
         FROM bets
         WHERE result IS NOT NULL AND bet_type = 'Total' AND selection LIKE 'Under%'
-        GROUP BY league_name
-        ORDER BY total_profit DESC
         """
 
         df = pd.read_sql_query(query, conn)
@@ -196,36 +195,55 @@ class TelegramBetNotifier:
         if profit_data.empty:
             return "📊 *RESUMO DE LUCROS UNDER*\n\nNenhum dado disponível ainda."
 
+        baseline = profit_data[
+            profit_data["league_name"].isin(["Setka Cup", "Czech Liga Pro"])
+        ]
+        baseline_profit = baseline.apply(
+            lambda x: x["profit"] if x["result"] == 1 else -1, axis=1
+        ).sum()
+        baseline_bets = len(baseline)
+        baseline_wins = (baseline["result"] == 1).sum()
+        baseline_losses = (baseline["result"] == 0).sum()
+        baseline_roi = (
+            (baseline_profit / baseline_bets * 100) if baseline_bets > 0 else 0
+        )
+
+        filtro = profit_data[
+            (profit_data["handicap"] >= 76.5)
+            & (profit_data["estimated_roi"] >= 45)
+            & (profit_data["bet_edge"] >= 0.15)
+        ]
+        filtro_profit = filtro.apply(
+            lambda x: x["profit"] if x["result"] == 1 else -1, axis=1
+        ).sum()
+        filtro_bets = len(filtro)
+        filtro_wins = (filtro["result"] == 1).sum()
+        filtro_losses = (filtro["result"] == 0).sum()
+        filtro_roi = (filtro_profit / filtro_bets * 100) if filtro_bets > 0 else 0
+
+        h78 = profit_data[profit_data["handicap"] >= 78.5]
+        h78_profit = h78.apply(
+            lambda x: x["profit"] if x["result"] == 1 else -1, axis=1
+        ).sum()
+        h78_bets = len(h78)
+        h78_wins = (h78["result"] == 1).sum()
+        h78_losses = (h78["result"] == 0).sum()
+        h78_roi = (h78_profit / h78_bets * 100) if h78_bets > 0 else 0
+
         message = "💰 *RESUMO DE LUCROS UNDER*\n"
         message += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
 
-        total_profit_overall = 0
-        total_bets_overall = 0
+        status_b = "✅" if baseline_profit > 0 else "❌"
+        message += f"📊 *Setka + Czech*\n"
+        message += f"{status_b} {baseline_profit:+.2f}u | ROI: {baseline_roi:+.1f}% | {baseline_wins}W-{baseline_losses}L ({baseline_bets})\n\n"
 
-        for _, row in profit_data.iterrows():
-            roi = (
-                (row["total_profit"] / row["total_bets"] * 100)
-                if row["total_bets"] > 0
-                else 0
-            )
-            status = "✅" if row["total_profit"] > 0 else "❌"
+        status_f = "✅" if filtro_profit > 0 else "❌"
+        message += f"🎯 *Filtro (H≥76.5 + ROI≥45% + Edge≥0.15)*\n"
+        message += f"{status_f} {filtro_profit:+.2f}u | ROI: {filtro_roi:+.1f}% | {filtro_wins}W-{filtro_losses}L ({filtro_bets})\n\n"
 
-            message += f"🏓 *{row['league_name']}*\n"
-            message += f"{status} {row['total_profit']:+.2f}u | ROI: {roi:+.1f}% | {row['wins']}W-{row['losses']}L\n\n"
-
-            total_profit_overall += row["total_profit"]
-            total_bets_overall += row["total_bets"]
-
-        total_roi_overall = (
-            (total_profit_overall / total_bets_overall * 100)
-            if total_bets_overall > 0
-            else 0
-        )
-        total_status_overall = "✅" if total_profit_overall > 0 else "❌"
-
-        message += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        message += f"📊 *TOTAL GERAL UNDER*\n"
-        message += f"{total_status_overall} {total_profit_overall:+.2f}u | ROI: {total_roi_overall:+.1f}% | {total_bets_overall} apostas"
+        status_h = "✅" if h78_profit > 0 else "❌"
+        message += f"🔥 *Handicap ≥ 78.5*\n"
+        message += f"{status_h} {h78_profit:+.2f}u | ROI: {h78_roi:+.1f}% | {h78_wins}W-{h78_losses}L ({h78_bets})"
 
         return message
 
@@ -293,9 +311,8 @@ class TelegramBetNotifier:
         try:
             sent_count = await self.send_new_bets()
 
-            if sent_count > 0:
-                await asyncio.sleep(2)
-                await self.send_profit_summary()
+            await asyncio.sleep(2)
+            await self.send_profit_summary()
 
             logger.info("✅ Execução concluída")
 

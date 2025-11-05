@@ -1,196 +1,101 @@
 import sqlite3
+
 import pandas as pd
-import numpy as np
-import logging
-from colorama import Fore, Style, init
 
-init(autoreset=True)  # Inicializa colorama para resetar a cor automaticamente
+conn = sqlite3.connect("bets.db")
+df = pd.read_sql_query("SELECT * FROM bets", conn)
+conn.close()
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+df = df[df["selection"].str.contains("Under", na=False)]
+df = df[~df["league_name"].str.contains("TT Cup", na=False)]
+
+
+def analisar(df_filtrado, nome):
+    if len(df_filtrado) == 0:
+        return None
+
+    win_rate = (df_filtrado["result"] == 1).sum() / len(df_filtrado) * 100
+    lucro = df_filtrado["profit"].sum()
+    roi = (lucro / len(df_filtrado)) * 100
+
+    return {
+        "filtro": nome,
+        "volume": len(df_filtrado),
+        "win_rate": win_rate,
+        "lucro": lucro,
+        "roi": roi,
+    }
+
+
+resultados = []
+
+print("=" * 130)
+print("BASELINE (Sem TT Cup)")
+print("=" * 130)
+base = analisar(df, "Todas Under")
+print(
+    f"{base['filtro']:50} | Vol: {base['volume']:4} | WR: {base['win_rate']:5.2f}% | Lucro: {base['lucro']:7.2f} | ROI: {base['roi']:6.2f}%"
 )
-logger = logging.getLogger("bet_stats_analyzer")
+print()
 
-
-class BetStatsAnalyzer:
-    def __init__(self, bets_db_path="bets.db"):
-        self.bets_db_path = bets_db_path
-        self.df_bets = self._load_bets_data()
-
-    def _load_bets_data(self):
-        """Carrega os dados da tabela 'bets' do banco de dados."""
-        try:
-            conn = sqlite3.connect(self.bets_db_path)
-            df = pd.read_sql_query("SELECT * FROM bets WHERE result IS NOT NULL", conn)
-            conn.close()
-            # Converte 'handicap' para numérico, tratando possíveis erros
-            df["handicap"] = pd.to_numeric(df["handicap"], errors="coerce")
-            # Remove linhas onde 'handicap' se tornou NaN após a conversão (se houver)
-            df.dropna(subset=["handicap"], inplace=True)
-            logger.info(f"Dados de {len(df)} apostas carregados com sucesso.")
-            return df
-        except Exception as e:
-            logger.error(f"Erro ao carregar dados do banco de dados: {e}")
-            return pd.DataFrame()
-
-    def _calculate_metrics(self, df):
-        """Calcula métricas de desempenho para um DataFrame de apostas."""
-        if df.empty:
-            return {
-                "Total de Apostas": 0,
-                "Vitórias": 0,
-                "Derrotas": 0,
-                "Taxa de Acerto": "0.00%",
-                "Lucro Total (u)": 0.0,
-                "ROI (%)": "0.00%",
-            }
-
-        total_bets = len(df)
-        wins = df["result"].sum()
-        losses = total_bets - wins
-        win_rate = (wins / total_bets) * 100 if total_bets > 0 else 0
-        total_profit = df["profit"].sum()
-        roi = (total_profit / total_bets) * 100 if total_bets > 0 else 0
-
-        return {
-            "Total de Apostas": total_bets,
-            "Vitórias": wins,
-            "Derrotas": losses,
-            "Taxa de Acerto": f"{win_rate:.2f}%",
-            "Lucro Total (u)": f"{total_profit:.2f}",
-            "ROI (%)": f"{roi:.2f}%",
-        }
-
-    def get_overall_stats(self):
-        """Retorna estatísticas gerais de todas as apostas."""
-        logger.info("Calculando estatísticas gerais...")
-        return self._calculate_metrics(self.df_bets)
-
-    def get_stats_by_league(self):
-        """Retorna estatísticas agrupadas por liga."""
-        logger.info("Calculando estatísticas por liga...")
-        if self.df_bets.empty:
-            return pd.DataFrame()
-
-        # Usar observed=False para evitar o FutureWarning com categorias
-        grouped = self.df_bets.groupby("league_name", observed=False).apply(
-            self._calculate_metrics
+print("=" * 130)
+print("FILTROS INDIVIDUAIS - HANDICAP")
+print("=" * 130)
+for h in [75.5, 76.5, 77.5, 78.5]:
+    r = analisar(df[df["handicap"] >= h], f"Handicap >= {h}")
+    if r:
+        print(
+            f"{r['filtro']:50} | Vol: {r['volume']:4} | WR: {r['win_rate']:5.2f}% | Lucro: {r['lucro']:7.2f} | ROI: {r['roi']:6.2f}%"
         )
-        return grouped.apply(pd.Series)
+        resultados.append(r)
+print()
 
-    def get_stats_by_market_by_league(self):
-        """Retorna estatísticas agrupadas por liga e tipo de mercado."""
-        logger.info("Calculando estatísticas por mercado por liga...")
-        if self.df_bets.empty:
-            return pd.DataFrame()
-
-        grouped = self.df_bets.groupby(
-            ["league_name", "bet_type"], observed=False
-        ).apply(self._calculate_metrics)
-        return grouped.apply(pd.Series)
-
-    def get_stats_by_odds_range(self):
-        """Retorna estatísticas agrupadas por liga, mercado e faixa de odds."""
-        logger.info("Calculando estatísticas por faixa de odds...")
-        if self.df_bets.empty:
-            return pd.DataFrame()
-
-        # Define as faixas de odds
-        bins = [0, 1.5, 2.0, 3.0, 5.0, 10.0, np.inf]
-        labels = ["<1.5", "1.5-2.0", "2.0-3.0", "3.0-5.0", "5.0-10.0", ">10.0"]
-        self.df_bets["odds_range"] = pd.cut(
-            self.df_bets["odds"], bins=bins, labels=labels, right=False
+print("=" * 130)
+print("FILTROS INDIVIDUAIS - ESTIMATED ROI")
+print("=" * 130)
+for roi_min in [25, 30, 35, 40, 45, 50]:
+    r = analisar(df[df["estimated_roi"] >= roi_min], f"ROI >= {roi_min}%")
+    if r:
+        print(
+            f"{r['filtro']:50} | Vol: {r['volume']:4} | WR: {r['win_rate']:5.2f}% | Lucro: {r['lucro']:7.2f} | ROI: {r['roi']:6.2f}%"
         )
+        resultados.append(r)
+print()
 
-        grouped = self.df_bets.groupby(
-            ["league_name", "bet_type", "odds_range"], observed=False
-        ).apply(self._calculate_metrics)
-        return grouped.apply(pd.Series)
-
-    def get_stats_by_roi_range(self):
-        """Retorna estatísticas agrupadas por liga, mercado e faixa de ROI."""
-        logger.info("Calculando estatísticas por faixa de ROI...")
-        if self.df_bets.empty:
-            return pd.DataFrame()
-
-        # Define as faixas de ROI
-        bins = [-np.inf, -50, -25, 0, 5, 10, 25, 50, np.inf]
-        labels = [
-            "<-50%",
-            "-50% a -25%",
-            "-25% a 0%",
-            "0% a 5%",
-            "5% a 10%",
-            "10% a 25%",
-            "25% a 50%",
-            ">50%",
-        ]
-        self.df_bets["roi_range"] = pd.cut(
-            self.df_bets["estimated_roi"], bins=bins, labels=labels, right=False
+print("=" * 130)
+print("FILTROS INDIVIDUAIS - BET EDGE")
+print("=" * 130)
+for edge in [0.15, 0.20, 0.25, 0.30, 0.35]:
+    r = analisar(df[df["bet_edge"] >= edge], f"Edge >= {edge}")
+    if r:
+        print(
+            f"{r['filtro']:50} | Vol: {r['volume']:4} | WR: {r['win_rate']:5.2f}% | Lucro: {r['lucro']:7.2f} | ROI: {r['roi']:6.2f}%"
         )
+        resultados.append(r)
+print()
 
-        grouped = self.df_bets.groupby(
-            ["league_name", "bet_type", "roi_range"], observed=False
-        ).apply(self._calculate_metrics)
-        return grouped.apply(pd.Series)
+print("=" * 130)
+print("COMBINAÇÕES (mínimo 50 apostas)")
+print("=" * 130)
 
+combinacoes = []
+for handicap in [76.5, 77.5, 78.5]:
+    for roi_min in [30, 35, 40, 45, 50]:
+        for edge_min in [0.15, 0.20, 0.25, 0.30]:
+            df_filtrado = df[
+                (df["handicap"] >= handicap)
+                & (df["estimated_roi"] >= roi_min)
+                & (df["bet_edge"] >= edge_min)
+            ]
 
-def main():
-    analyzer = BetStatsAnalyzer()
+            nome = f"H>={handicap} + ROI>={roi_min}% + Edge>={edge_min}"
+            r = analisar(df_filtrado, nome)
+            if r and r["volume"] >= 50:
+                combinacoes.append(r)
 
-    print(f"\n{Fore.CYAN}{Style.BRIGHT}{'=' * 60}{Style.RESET_ALL}")
+df_comb = pd.DataFrame(combinacoes).sort_values("roi", ascending=False)
+
+for _, row in df_comb.head(15).iterrows():
     print(
-        f"{Fore.CYAN}{Style.BRIGHT}{'ESTATÍSTICAS GERAIS DE APOSTAS'.center(60)}{Style.RESET_ALL}"
+        f"{row['filtro']:50} | Vol: {row['volume']:4} | WR: {row['win_rate']:5.2f}% | Lucro: {row['lucro']:7.2f} | ROI: {row['roi']:6.2f}%"
     )
-    print(f"{Fore.CYAN}{Style.BRIGHT}{'=' * 60}{Style.RESET_ALL}")
-    overall_stats = analyzer.get_overall_stats()
-    for k, v in overall_stats.items():
-        print(f"{Fore.GREEN}{k:<20}{Style.RESET_ALL}: {v}")
-
-    print(f"\n{Fore.CYAN}{Style.BRIGHT}{'=' * 60}{Style.RESET_ALL}")
-    print(
-        f"{Fore.CYAN}{Style.BRIGHT}{'ESTATÍSTICAS POR LIGA'.center(60)}{Style.RESET_ALL}"
-    )
-    print(f"{Fore.CYAN}{Style.BRIGHT}{'=' * 60}{Style.RESET_ALL}")
-    stats_by_league = analyzer.get_stats_by_league()
-    if not stats_by_league.empty:
-        print(stats_by_league.to_markdown(numalign="left", stralign="left"))
-    else:
-        print("Nenhuma estatística por liga disponível.")
-
-    print(f"\n{Fore.CYAN}{Style.BRIGHT}{'=' * 60}{Style.RESET_ALL}")
-    print(
-        f"{Fore.CYAN}{Style.BRIGHT}{'ESTATÍSTICAS POR MERCADO E LIGA'.center(60)}{Style.RESET_ALL}"
-    )
-    print(f"{Fore.CYAN}{Style.BRIGHT}{'=' * 60}{Style.RESET_ALL}")
-    stats_by_market_by_league = analyzer.get_stats_by_market_by_league()
-    if not stats_by_market_by_league.empty:
-        print(stats_by_market_by_league.to_markdown(numalign="left", stralign="left"))
-    else:
-        print("Nenhuma estatística por mercado por liga disponível.")
-
-    print(f"\n{Fore.CYAN}{Style.BRIGHT}{'=' * 60}{Style.RESET_ALL}")
-    print(
-        f"{Fore.CYAN}{Style.BRIGHT}{'ESTATÍSTICAS POR FAIXA DE ODDS (LIGA E MERCADO)'.center(60)}{Style.RESET_ALL}"
-    )
-    print(f"{Fore.CYAN}{Style.BRIGHT}{'=' * 60}{Style.RESET_ALL}")
-    stats_by_odds_range = analyzer.get_stats_by_odds_range()
-    if not stats_by_odds_range.empty:
-        print(stats_by_odds_range.to_markdown(numalign="left", stralign="left"))
-    else:
-        print("Nenhuma estatística por faixa de odds disponível.")
-
-    print(f"\n{Fore.CYAN}{Style.BRIGHT}{'=' * 60}{Style.RESET_ALL}")
-    print(
-        f"{Fore.CYAN}{Style.BRIGHT}{'ESTATÍSTICAS POR FAIXA DE ROI (LIGA E MERCADO)'.center(60)}{Style.RESET_ALL}"
-    )
-    print(f"{Fore.CYAN}{Style.BRIGHT}{'=' * 60}{Style.RESET_ALL}")
-    stats_by_roi_range = analyzer.get_stats_by_roi_range()
-    if not stats_by_roi_range.empty:
-        print(stats_by_roi_range.to_markdown(numalign="left", stralign="left"))
-    else:
-        print("Nenhuma estatística por faixa de ROI disponível.")
-
-
-if __name__ == "__main__":
-    main()

@@ -20,6 +20,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("telegram_notifier")
 
+filtro = True  # variável global para ativar o filtro da estratégia
+
 
 class TelegramBetNotifier:
     def __init__(self, bot_token=None, chat_id=None, bets_db_path="bets.db"):
@@ -40,12 +42,12 @@ class TelegramBetNotifier:
 
         cursor.execute(
             """
-        CREATE TABLE IF NOT EXISTS telegram_sent_bets (
-            bet_id INTEGER PRIMARY KEY,
-            sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (bet_id) REFERENCES bets (id)
-        )
-        """
+            CREATE TABLE IF NOT EXISTS telegram_sent_bets (
+                bet_id INTEGER PRIMARY KEY,
+                sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (bet_id) REFERENCES bets (id)
+            )
+            """
         )
 
         conn.commit()
@@ -64,16 +66,31 @@ class TelegramBetNotifier:
             f"Total apostas: {debug_df.iloc[0]['total_bets']}, Já enviadas: {sent_df.iloc[0]['sent_count']}"
         )
 
-        query = """
-        SELECT 
-            b.id, b.league_name, b.home_team, b.away_team, 
-            b.event_time, b.bet_type, b.selection, b.handicap, 
-            b.odds, b.estimated_roi
-        FROM bets b
-        LEFT JOIN telegram_sent_bets t ON b.id = t.bet_id
-        WHERE t.bet_id IS NULL AND b.bet_type = 'Total' AND b.selection LIKE 'Under%'
-        ORDER BY b.league_name, b.event_time ASC
+        base_query = """
+            SELECT 
+                b.id, b.league_name, b.home_team, b.away_team, 
+                b.event_time, b.bet_type, b.selection, b.handicap, 
+                b.odds, b.estimated_roi
+            FROM bets b
+            LEFT JOIN telegram_sent_bets t ON b.id = t.bet_id
+            WHERE t.bet_id IS NULL 
+              AND b.bet_type = 'Total' 
+              AND b.selection LIKE 'Under%'
         """
+
+        if filtro:
+            filtro_cond = """
+              AND (
+                (b.handicap = 76.5 AND b.estimated_roi >= 20)
+                OR (b.handicap = 77.5 AND b.estimated_roi >= 40)
+                OR (b.handicap = 78.5)
+              )
+            """
+            query = (
+                base_query + filtro_cond + " ORDER BY b.league_name, b.event_time ASC"
+            )
+        else:
+            query = base_query + " ORDER BY b.league_name, b.event_time ASC"
 
         df = pd.read_sql_query(query, conn)
 
@@ -99,15 +116,15 @@ class TelegramBetNotifier:
         conn = sqlite3.connect(self.bets_db_path)
 
         query = """
-        SELECT 
-            result,
-            profit,
-            handicap,
-            estimated_roi,
-            bet_edge,
-            league_name
-        FROM bets
-        WHERE result IS NOT NULL AND bet_type = 'Total' AND selection LIKE 'Under%'
+            SELECT 
+                result,
+                profit,
+                handicap,
+                estimated_roi,
+                bet_edge,
+                league_name
+            FROM bets
+            WHERE result IS NOT NULL AND bet_type = 'Total' AND selection LIKE 'Under%'
         """
 
         df = pd.read_sql_query(query, conn)
@@ -198,9 +215,7 @@ class TelegramBetNotifier:
         baseline = profit_data[
             profit_data["league_name"].isin(["Setka Cup", "Czech Liga Pro"])
         ]
-        baseline_profit = baseline.apply(
-            lambda x: x["profit"] if x["result"] == 1 else -1, axis=1
-        ).sum()
+        baseline_profit = baseline["profit"].sum()
         baseline_bets = len(baseline)
         baseline_wins = (baseline["result"] == 1).sum()
         baseline_losses = (baseline["result"] == 0).sum()
@@ -208,23 +223,19 @@ class TelegramBetNotifier:
             (baseline_profit / baseline_bets * 100) if baseline_bets > 0 else 0
         )
 
-        filtro = profit_data[
-            (profit_data["handicap"] >= 76.5)
-            & (profit_data["estimated_roi"] >= 45)
-            & (profit_data["bet_edge"] >= 0.15)
+        filtro_df = profit_data[
+            ((profit_data["handicap"] == 76.5) & (profit_data["estimated_roi"] >= 20))
+            | ((profit_data["handicap"] == 77.5) & (profit_data["estimated_roi"] >= 40))
+            | (profit_data["handicap"] == 78.5)
         ]
-        filtro_profit = filtro.apply(
-            lambda x: x["profit"] if x["result"] == 1 else -1, axis=1
-        ).sum()
-        filtro_bets = len(filtro)
-        filtro_wins = (filtro["result"] == 1).sum()
-        filtro_losses = (filtro["result"] == 0).sum()
+        filtro_profit = filtro_df["profit"].sum()
+        filtro_bets = len(filtro_df)
+        filtro_wins = (filtro_df["result"] == 1).sum()
+        filtro_losses = (filtro_df["result"] == 0).sum()
         filtro_roi = (filtro_profit / filtro_bets * 100) if filtro_bets > 0 else 0
 
         h78 = profit_data[profit_data["handicap"] >= 78.5]
-        h78_profit = h78.apply(
-            lambda x: x["profit"] if x["result"] == 1 else -1, axis=1
-        ).sum()
+        h78_profit = h78["profit"].sum()
         h78_bets = len(h78)
         h78_wins = (h78["result"] == 1).sum()
         h78_losses = (h78["result"] == 0).sum()
@@ -238,7 +249,7 @@ class TelegramBetNotifier:
         message += f"{status_b} {baseline_profit:+.2f}u | ROI: {baseline_roi:+.1f}% | {baseline_wins}W-{baseline_losses}L ({baseline_bets})\n\n"
 
         status_f = "✅" if filtro_profit > 0 else "❌"
-        message += f"🎯 *Filtro (H≥76.5 + ROI≥45% + Edge≥0.15)*\n"
+        message += f"🎯 *Filtro Estratégico*\n"
         message += f"{status_f} {filtro_profit:+.2f}u | ROI: {filtro_roi:+.1f}% | {filtro_wins}W-{filtro_losses}L ({filtro_bets})\n\n"
 
         status_h = "✅" if h78_profit > 0 else "❌"
@@ -310,12 +321,9 @@ class TelegramBetNotifier:
     async def run(self):
         try:
             sent_count = await self.send_new_bets()
-
             await asyncio.sleep(2)
             await self.send_profit_summary()
-
             logger.info("✅ Execução concluída")
-
         except Exception as e:
             logger.error(f"❌ Erro durante execução: {e}")
             raise

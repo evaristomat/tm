@@ -20,7 +20,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("telegram_notifier")
 
-filtro = True  # variável global para ativar o filtro da estratégia
+filtro = True  # variável global para controle (não usada para filtro, só para controle opcional)
 
 
 class TelegramBetNotifier:
@@ -39,7 +39,6 @@ class TelegramBetNotifier:
     def init_tracking_tables(self):
         conn = sqlite3.connect(self.bets_db_path)
         cursor = conn.cursor()
-
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS telegram_sent_bets (
@@ -49,74 +48,47 @@ class TelegramBetNotifier:
             )
             """
         )
-
         conn.commit()
         conn.close()
 
     def get_new_bets(self):
         conn = sqlite3.connect(self.bets_db_path)
 
-        debug_query = "SELECT COUNT(*) as total_bets FROM bets"
-        debug_df = pd.read_sql_query(debug_query, conn)
-
-        sent_query = "SELECT COUNT(*) as sent_count FROM telegram_sent_bets"
-        sent_df = pd.read_sql_query(sent_query, conn)
-
-        logger.info(
-            f"Total apostas: {debug_df.iloc[0]['total_bets']}, Já enviadas: {sent_df.iloc[0]['sent_count']}"
-        )
-
-        base_query = """
-            SELECT 
-                b.id, b.league_name, b.home_team, b.away_team, 
-                b.event_time, b.bet_type, b.selection, b.handicap, 
+        query = """
+            SELECT
+                b.id, b.league_name, b.home_team, b.away_team,
+                b.event_time, b.bet_type, b.selection, b.handicap,
                 b.odds, b.estimated_roi
             FROM bets b
             LEFT JOIN telegram_sent_bets t ON b.id = t.bet_id
-            WHERE t.bet_id IS NULL 
-              AND b.bet_type = 'Total' 
+            WHERE t.bet_id IS NULL
+              AND b.bet_type = 'Total'
               AND b.selection LIKE 'Under%'
+              AND b.league_name IN ('Setka Cup', 'Czech Liga Pro')
+              AND b.handicap >= 76.5
+            ORDER BY b.league_name, b.event_time ASC
         """
-
-        if filtro:
-            filtro_cond = """
-              AND (
-                (b.handicap = 76.5 AND b.estimated_roi >= 20)
-                OR (b.handicap = 77.5 AND b.estimated_roi >= 40)
-                OR (b.handicap = 78.5)
-              )
-            """
-            query = (
-                base_query + filtro_cond + " ORDER BY b.league_name, b.event_time ASC"
-            )
-        else:
-            query = base_query + " ORDER BY b.league_name, b.event_time ASC"
-
         df = pd.read_sql_query(query, conn)
+        conn.close()
 
         if not df.empty:
             logger.info(f"Apostas Under não enviadas encontradas: {len(df)}")
-
-        conn.close()
         return df
 
     def mark_bets_as_sent(self, bet_ids):
         conn = sqlite3.connect(self.bets_db_path)
         cursor = conn.cursor()
-
         for bet_id in bet_ids:
             cursor.execute(
                 "INSERT INTO telegram_sent_bets (bet_id) VALUES (?)", (bet_id,)
             )
-
         conn.commit()
         conn.close()
 
     def get_profit_summary(self):
         conn = sqlite3.connect(self.bets_db_path)
-
         query = """
-            SELECT 
+            SELECT
                 result,
                 profit,
                 handicap,
@@ -126,14 +98,12 @@ class TelegramBetNotifier:
             FROM bets
             WHERE result IS NOT NULL AND bet_type = 'Total' AND selection LIKE 'Under%'
         """
-
         df = pd.read_sql_query(query, conn)
         conn.close()
         return df
 
     def format_bet_messages(self, league_bets):
         league_name = league_bets.iloc[0]["league_name"]
-
         league_icons = {
             "Czech Liga Pro": "🇨🇿",
             "TT Elite Series": "⭐",
@@ -142,7 +112,6 @@ class TelegramBetNotifier:
             "Setka Cup": "🇺🇦",
             "Setka Cup Women": "♀️🇺🇦",
         }
-
         icon = league_icons.get(league_name, "🏓")
         header = f"{icon} *{league_name}*\n"
         header += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -161,7 +130,16 @@ class TelegramBetNotifier:
                 time_str = pd.to_datetime(bet["event_time"]).strftime("%d/%m %H:%M")
                 tip = f"{bet['selection']} {bet['handicap']:.1f}"
 
-                section += f"🆚 {bet['home_team']} vs {bet['away_team']}\n"
+                # Definir estrelas conforme categoria
+                stars = "⭐"  # padrão 1 estrela
+                if bet["handicap"] >= 78.5:
+                    stars = "⭐⭐⭐"
+                elif (bet["handicap"] == 76.5 and bet["estimated_roi"] >= 20) or (
+                    bet["handicap"] == 77.5 and bet["estimated_roi"] >= 40
+                ):
+                    stars = "⭐⭐"
+
+                section += f"{stars} 🆚 {bet['home_team']} vs {bet['away_team']}\n"
                 section += f"🎯 {tip} | 📊 {bet['odds']:.2f} | ⏰ {time_str}\n"
                 section += f"📈 ROI: {bet['estimated_roi']:.1f}%\n\n"
 
@@ -226,7 +204,7 @@ class TelegramBetNotifier:
         filtro_df = profit_data[
             ((profit_data["handicap"] == 76.5) & (profit_data["estimated_roi"] >= 20))
             | ((profit_data["handicap"] == 77.5) & (profit_data["estimated_roi"] >= 40))
-            | (profit_data["handicap"] == 78.5)
+            | (profit_data["handicap"] >= 78.5)
         ]
         filtro_profit = filtro_df["profit"].sum()
         filtro_bets = len(filtro_df)

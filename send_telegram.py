@@ -20,8 +20,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger("telegram_notifier")
 
-filtro = True  # variável global para controle (não usada para filtro, só para controle opcional)
-
 
 class TelegramBetNotifier:
     def __init__(self, bot_token=None, chat_id=None, bets_db_path="bets.db"):
@@ -64,8 +62,11 @@ class TelegramBetNotifier:
             WHERE t.bet_id IS NULL
               AND b.bet_type = 'Total'
               AND b.selection LIKE 'Under%'
-              AND b.league_name IN ('Setka Cup', 'Czech Liga Pro')
-              AND b.handicap >= 76.5
+              AND (
+                  (b.league_name = 'Setka Cup' AND b.handicap = 76.5 AND b.estimated_roi >= 20)
+                  OR (b.league_name = 'Czech Liga Pro' AND b.handicap = 76.5 AND b.estimated_roi >= 20)
+                  OR (b.league_name = 'Czech Liga Pro' AND b.handicap = 78.5 AND b.estimated_roi >= 10)
+              )
             ORDER BY b.league_name, b.event_time ASC
         """
         df = pd.read_sql_query(query, conn)
@@ -96,7 +97,14 @@ class TelegramBetNotifier:
                 bet_edge,
                 league_name
             FROM bets
-            WHERE result IS NOT NULL AND bet_type = 'Total' AND selection LIKE 'Under%'
+            WHERE result IS NOT NULL 
+              AND bet_type = 'Total' 
+              AND selection LIKE 'Under%'
+              AND (
+                  (league_name = 'Setka Cup' AND handicap = 76.5 AND estimated_roi >= 20)
+                  OR (league_name = 'Czech Liga Pro' AND handicap = 76.5 AND estimated_roi >= 20)
+                  OR (league_name = 'Czech Liga Pro' AND handicap = 78.5 AND estimated_roi >= 10)
+              )
         """
         df = pd.read_sql_query(query, conn)
         conn.close()
@@ -131,13 +139,13 @@ class TelegramBetNotifier:
                 tip = f"{bet['selection']} {bet['handicap']:.1f}"
 
                 # Definir estrelas conforme categoria
-                stars = "⭐"  # padrão 1 estrela
+                is_setka = bet["league_name"] == "Setka Cup"
+
                 if bet["handicap"] >= 78.5:
                     stars = "⭐⭐⭐"
-                elif (bet["handicap"] == 76.5 and bet["estimated_roi"] >= 20) or (
-                    bet["handicap"] == 77.5 and bet["estimated_roi"] >= 40
-                ):
-                    stars = "⭐⭐"
+                else:
+                    # H76.5 com ROI >= 20 (filtro estratégico)
+                    stars = "⭐⭐🔥" if is_setka else "⭐⭐"
 
                 section += f"{stars} 🆚 {bet['home_team']} vs {bet['away_team']}\n"
                 section += f"🎯 {tip} | 📊 {bet['odds']:.2f} | ⏰ {time_str}\n"
@@ -160,7 +168,14 @@ class TelegramBetNotifier:
                     time_str = pd.to_datetime(bet["event_time"]).strftime("%d/%m %H:%M")
                     tip = f"{bet['selection']} {bet['handicap']:.1f}"
 
-                    bet_text = f"🆚 {bet['home_team']} vs {bet['away_team']}\n"
+                    is_setka = bet["league_name"] == "Setka Cup"
+
+                    if bet["handicap"] >= 78.5:
+                        stars = "⭐⭐⭐"
+                    else:
+                        stars = "⭐⭐🔥" if is_setka else "⭐⭐"
+
+                    bet_text = f"{stars} 🆚 {bet['home_team']} vs {bet['away_team']}\n"
                     bet_text += f"🎯 {tip} | 📊 {bet['odds']:.2f} | ⏰ {time_str}\n"
                     bet_text += f"📈 ROI: {bet['estimated_roi']:.1f}%\n\n"
 
@@ -190,49 +205,68 @@ class TelegramBetNotifier:
         if profit_data.empty:
             return "📊 *RESUMO DE LUCROS UNDER*\n\nNenhum dado disponível ainda."
 
-        baseline = profit_data[
-            profit_data["league_name"].isin(["Setka Cup", "Czech Liga Pro"])
+        # Estratégia otimizada completa
+        total_profit = profit_data["profit"].sum()
+        total_bets = len(profit_data)
+        total_wins = (profit_data["result"] == 1).sum()
+        total_losses = (profit_data["result"] == 0).sum()
+        total_roi = (total_profit / total_bets * 100) if total_bets > 0 else 0
+
+        # Setka Cup H76.5 ROI>=20
+        setka = profit_data[
+            (profit_data["league_name"] == "Setka Cup")
+            & (profit_data["handicap"] == 76.5)
         ]
-        baseline_profit = baseline["profit"].sum()
-        baseline_bets = len(baseline)
-        baseline_wins = (baseline["result"] == 1).sum()
-        baseline_losses = (baseline["result"] == 0).sum()
-        baseline_roi = (
-            (baseline_profit / baseline_bets * 100) if baseline_bets > 0 else 0
+        setka_profit = setka["profit"].sum()
+        setka_bets = len(setka)
+        setka_wins = (setka["result"] == 1).sum()
+        setka_losses = (setka["result"] == 0).sum()
+        setka_roi = (setka_profit / setka_bets * 100) if setka_bets > 0 else 0
+
+        # Czech Liga Pro H76.5 ROI>=20
+        czech_76 = profit_data[
+            (profit_data["league_name"] == "Czech Liga Pro")
+            & (profit_data["handicap"] == 76.5)
+        ]
+        czech_76_profit = czech_76["profit"].sum()
+        czech_76_bets = len(czech_76)
+        czech_76_wins = (czech_76["result"] == 1).sum()
+        czech_76_losses = (czech_76["result"] == 0).sum()
+        czech_76_roi = (
+            (czech_76_profit / czech_76_bets * 100) if czech_76_bets > 0 else 0
         )
 
-        filtro_df = profit_data[
-            ((profit_data["handicap"] == 76.5) & (profit_data["estimated_roi"] >= 20))
-            | ((profit_data["handicap"] == 77.5) & (profit_data["estimated_roi"] >= 40))
-            | (profit_data["handicap"] >= 78.5)
+        # Czech Liga Pro H78.5 ROI>=10
+        czech_78 = profit_data[
+            (profit_data["league_name"] == "Czech Liga Pro")
+            & (profit_data["handicap"] >= 78.5)
         ]
-        filtro_profit = filtro_df["profit"].sum()
-        filtro_bets = len(filtro_df)
-        filtro_wins = (filtro_df["result"] == 1).sum()
-        filtro_losses = (filtro_df["result"] == 0).sum()
-        filtro_roi = (filtro_profit / filtro_bets * 100) if filtro_bets > 0 else 0
-
-        h78 = profit_data[profit_data["handicap"] >= 78.5]
-        h78_profit = h78["profit"].sum()
-        h78_bets = len(h78)
-        h78_wins = (h78["result"] == 1).sum()
-        h78_losses = (h78["result"] == 0).sum()
-        h78_roi = (h78_profit / h78_bets * 100) if h78_bets > 0 else 0
+        czech_78_profit = czech_78["profit"].sum()
+        czech_78_bets = len(czech_78)
+        czech_78_wins = (czech_78["result"] == 1).sum()
+        czech_78_losses = (czech_78["result"] == 0).sum()
+        czech_78_roi = (
+            (czech_78_profit / czech_78_bets * 100) if czech_78_bets > 0 else 0
+        )
 
         message = "💰 *RESUMO DE LUCROS UNDER*\n"
         message += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
 
-        status_b = "✅" if baseline_profit > 0 else "❌"
-        message += f"📊 *Setka + Czech*\n"
-        message += f"{status_b} {baseline_profit:+.2f}u | ROI: {baseline_roi:+.1f}% | {baseline_wins}W-{baseline_losses}L ({baseline_bets})\n\n"
+        status_total = "✅" if total_profit > 0 else "❌"
+        message += f"🎯 *ESTRATÉGIA OTIMIZADA*\n"
+        message += f"{status_total} {total_profit:+.2f}u | ROI: {total_roi:+.1f}% | {total_wins}W-{total_losses}L ({total_bets})\n\n"
 
-        status_f = "✅" if filtro_profit > 0 else "❌"
-        message += f"🎯 *Filtro Estratégico*\n"
-        message += f"{status_f} {filtro_profit:+.2f}u | ROI: {filtro_roi:+.1f}% | {filtro_wins}W-{filtro_losses}L ({filtro_bets})\n\n"
+        status_setka = "✅" if setka_profit > 0 else "❌"
+        message += f"🔥 *Setka H76.5 (ROI≥20%)*\n"
+        message += f"{status_setka} {setka_profit:+.2f}u | ROI: {setka_roi:+.1f}% | {setka_wins}W-{setka_losses}L ({setka_bets})\n\n"
 
-        status_h = "✅" if h78_profit > 0 else "❌"
-        message += f"🔥 *Handicap ≥ 78.5*\n"
-        message += f"{status_h} {h78_profit:+.2f}u | ROI: {h78_roi:+.1f}% | {h78_wins}W-{h78_losses}L ({h78_bets})"
+        status_c76 = "✅" if czech_76_profit > 0 else "❌"
+        message += f"🇨🇿 *Czech H76.5 (ROI≥20%)*\n"
+        message += f"{status_c76} {czech_76_profit:+.2f}u | ROI: {czech_76_roi:+.1f}% | {czech_76_wins}W-{czech_76_losses}L ({czech_76_bets})\n\n"
+
+        status_c78 = "✅" if czech_78_profit > 0 else "❌"
+        message += f"⭐ *Czech H78.5+ (ROI≥10%)*\n"
+        message += f"{status_c78} {czech_78_profit:+.2f}u | ROI: {czech_78_roi:+.1f}% | {czech_78_wins}W-{czech_78_losses}L ({czech_78_bets})"
 
         return message
 

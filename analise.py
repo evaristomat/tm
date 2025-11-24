@@ -110,3 +110,71 @@ for handicap in handicap_lines:
             print(
                 f"{r['filtro']:30} | Vol: {r['volume']:4} | WR: {r['win_rate']:5.2f}% | Lucro: {r['lucro']:8.2f} | ROI: {r['roi']:7.2f}%"
             )
+
+
+# ANÁLISE DE LUCRO POR LIGA
+print("\n" + "=" * 130)
+print("ANÁLISE DE LUCRO POR LIGA (Czech Liga Pro vs Setka Cup)")
+print("=" * 130)
+
+# Análise geral por liga
+for liga in ["Czech Liga Pro", "Setka Cup"]:
+    df_liga = df[df["league_name"] == liga]
+    r = analisar(df_liga, liga)
+    if r:
+        print(
+            f"{r['filtro']:40} | Vol: {r['volume']:4} | WR: {r['win_rate']:5.2f}% | Lucro: {r['lucro']:8.2f} | ROI: {r['roi']:7.2f}%"
+        )
+
+# Análise por liga e handicap
+print("\n" + "=" * 130)
+print("ANÁLISE POR LIGA E HANDICAP")
+print("=" * 130)
+
+for liga in ["Czech Liga Pro", "Setka Cup"]:
+    print(f"\n{liga}:")
+    for handicap in [76.5, 77.5, 78.5]:
+        df_filtrado = df[(df["league_name"] == liga) & (df["handicap"] == handicap)]
+        r = analisar(df_filtrado, f"  H == {handicap}")
+        if r:
+            print(
+                f"{r['filtro']:40} | Vol: {r['volume']:4} | WR: {r['win_rate']:5.2f}% | Lucro: {r['lucro']:8.2f} | ROI: {r['roi']:7.2f}%"
+            )
+
+# Análise por liga com diferentes faixas de handicap
+print("\n" + "=" * 130)
+print("ANÁLISE POR LIGA E FAIXA DE HANDICAP")
+print("=" * 130)
+
+faixas = [
+    ("H <= 76.5", lambda x: x <= 76.5),
+    ("H <= 77.5", lambda x: x <= 77.5),
+    ("H <= 78.5", lambda x: x <= 78.5),
+    ("H > 76.5", lambda x: x > 76.5),
+    ("H > 77.5", lambda x: x > 77.5),
+]
+
+for liga in ["Czech Liga Pro", "Setka Cup"]:
+    print(f"\n{liga}:")
+    for nome_faixa, condicao in faixas:
+        df_filtrado = df[(df["league_name"] == liga) & (df["handicap"].apply(condicao))]
+        r = analisar(df_filtrado, f"  {nome_faixa}")
+        if r:
+            print(
+                f"{r['filtro']:40} | Vol: {r['volume']:4} | WR: {r['win_rate']:5.2f}% | Lucro: {r['lucro']:8.2f} | ROI: {r['roi']:7.2f}%"
+            )
+
+# Análise por liga com filtros de ROI
+print("\n" + "=" * 130)
+print("ANÁLISE POR LIGA COM FILTROS DE ROI (mínimo 30 apostas)")
+print("=" * 130)
+
+for liga in ["Czech Liga Pro", "Setka Cup"]:
+    print(f"\n{liga}:")
+    for roi_min in [20, 30, 40, 50]:
+        df_filtrado = df[(df["league_name"] == liga) & (df["estimated_roi"] >= roi_min)]
+        r = analisar(df_filtrado, f"  ROI >= {roi_min}%")
+        if r and r["volume"] >= 30:
+            print(
+                f"{r['filtro']:40} | Vol: {r['volume']:4} | WR: {r['win_rate']:5.2f}% | Lucro: {r['lucro']:8.2f} | ROI: {r['roi']:7.2f}%"
+            )

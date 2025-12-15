@@ -1,6 +1,6 @@
 name: Run Bet365 Bot
 
-on:
+#on:
   schedule:
     - cron: '0 8 * * *'   # 8:00 UTC
     - cron: '0 14 * * *'  # 14:00 UTC
